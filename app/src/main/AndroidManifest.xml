@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <permission
+        android:name="com.artmedical.permission.BIND_DCC"
+        android:protectionLevel="signature" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Dcc">
+        <service
+            android:name=".service.ConnectivityService"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="com.artmedical.permission.BIND_DCC"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="com.artmedical.dcc.START_SERVICE" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

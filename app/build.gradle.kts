@@ -1,0 +1,76 @@
+// Forcing a self-contained app module configuration.
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    id("kotlin-parcelize")
+}
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+android {
+    namespace = "com.artmedical.dcc"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.artmedical.dcc"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        val awsIotEndpoint = localProperties.getProperty("AWS_IOT_ENDPOINT") ?: ""
+        val cognitoPoolId = localProperties.getProperty("COGNITO_POOL_ID") ?: ""
+        buildConfigField("String", "AWS_IOT_ENDPOINT", "\"$awsIotEndpoint\"")
+        buildConfigField("String", "COGNITO_POOL_ID", "\"$cognitoPoolId\"")
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+
+    sourceSets {
+        getByName("main") {
+            aidl.srcDirs("src/main/aidl")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+}
+
+dependencies {
+    // No project dependencies - self-contained build.
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.material)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("com.amazonaws:aws-android-sdk-iot:2.81.1")
+    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+}
