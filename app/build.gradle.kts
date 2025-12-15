@@ -1,4 +1,3 @@
-// Forcing a self-contained app module configuration.
 import java.util.Properties
 
 plugins {
@@ -43,14 +42,7 @@ android {
     }
 
     buildFeatures {
-        aidl = true
         buildConfig = true
-    }
-
-    sourceSets {
-        getByName("main") {
-            aidl.srcDirs("src/main/aidl")
-        }
     }
 
     compileOptions {
@@ -63,7 +55,7 @@ android {
 }
 
 dependencies {
-    // No project dependencies - self-contained build.
+    api(project(":shared-api"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)

@@ -29,14 +29,7 @@ android {
     }
 
     buildFeatures {
-        aidl = true
         buildConfig = true
-    }
-
-    sourceSets {
-        getByName("main") {
-            aidl.srcDirs("src/main/aidl")
-        }
     }
 
     compileOptions {
@@ -49,6 +42,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":shared-api"))
     implementation("androidx.core:core-ktx:1.10.1")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.10.0")

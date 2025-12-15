@@ -1,4 +1,3 @@
-// Forcing a rewrite to restore the correct AIDL file structure.
 package com.artmedical.cloud.api;
 
 import com.artmedical.cloud.api.CloudEventParcel;

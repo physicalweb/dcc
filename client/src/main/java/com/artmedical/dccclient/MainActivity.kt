@@ -19,6 +19,9 @@ class MainActivity : AppCompatActivity() {
 
     private val tag = "DCC-Client"
 
+    // Test to prove shared-api visibility
+    private val heartbeatTest: com.artmedical.cloud.api.IHeartbeatService? = null
+
     private var cloudService: ICloudConnectService? = null
     private var isBound = false
 

@@ -30,6 +30,9 @@ class ConnectivityService : Service() {
     private val tag = "DCC-Service"
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // Test to prove shared-api visibility
+    private val heartbeatTest: com.artmedical.cloud.api.IHeartbeatService? = null
+
     private val NOTIFICATION_CHANNEL_ID = "DCC_Service_Channel"
     private val NOTIFICATION_ID = 1
 
