@@ -39,6 +39,41 @@ The project is structured as a multi-module Android application to ensure a clea
 *   **AWS IoT Integration:** Includes a full implementation for connecting to AWS IoT Core using Cognito for authentication.
 *   **Kotlin Coroutines:** Used for managing background tasks and asynchronous operations within the service.
 
+## Security Model
+
+Interaction between external apps and the DCC service is protected by a custom, `signature`-level Android permission. This is a robust security model that ensures only trusted applications can bind to the service.
+
+Here's how it works:
+
+1.  **Permission Definition (`:app` module):**
+    The `app` module's manifest defines a custom permission with a `protectionLevel` of `signature`.
+    ```
+    <permission
+        android:name="com.artmedical.permission.BIND_DCC"
+        android:protectionLevel="signature" />
+    ```
+    This tells the Android OS that this permission can only be granted to apps signed with the **exact same digital certificate** as the `app` module itself.
+
+2.  **Service Protection (`:app` module):**
+    The `ConnectivityService` is protected by this custom permission.
+    ```
+    <service
+        ...
+        android:permission="com.artmedical.permission.BIND_DCC">
+    </service>
+    ```
+    The OS will now enforce that only apps granted the `BIND_DCC` permission can start or bind to this service.
+
+3.  **Permission Request (`:client` module):**
+    Any client app wishing to connect must request this permission in its own manifest.
+    ```
+    <uses-permission android:name="com.artmedical.permission.BIND_DCC" />
+    ```
+
+When a client app is installed, the Android OS checks if its signing certificate matches the `dcc` app's certificate. If they match, the permission is granted automatically. If they do not match, the permission is denied, and any attempt to bind will fail with a `SecurityException`.
+
+**In summary: To allow another app to use the DCC service, you must sign its APK with the same release key (`.keystore` file) that you use to sign the main `dcc` app.**
+
 ## Getting Started
 
 ### Prerequisites
@@ -85,7 +120,6 @@ This project is a proof of concept and is not production-ready. Key limitations 
 
 *   **No Persistent Queue:** If the service cannot reach the cloud, events sent from the client are held in an in-memory queue and will be lost if the service is killed. A production implementation would use a database (like Room) or file-based queue.
 *   **Minimal Error Handling:** The error handling for network issues or invalid data is very basic.
-*   **Basic Security:** The service is protected by a `signature`-level permission, which means only apps signed with the same key can bind to it. This is a good baseline but may not be sufficient for all use cases.
 *   **Hardcoded AWS Region:** The AWS Region is currently hardcoded to `us-east-1` in `ConnectivityService.kt`.
 
 ## License
