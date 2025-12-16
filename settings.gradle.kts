@@ -1,4 +1,4 @@
-// Standard project structure.
+// Reactivating the shared-api module for the new test.
 pluginManagement {
     repositories {
         google()
@@ -13,6 +13,8 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
+
 rootProject.name = "dcc"
 include(":app")
 include(":client")
+include(":shared-api")

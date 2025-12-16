@@ -1,3 +1,4 @@
+// Forcing removal of local AIDL config to resolve duplicate class error.
 import java.util.Properties
 
 plugins {
@@ -62,7 +63,4 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.amazonaws:aws-android-sdk-iot:2.81.1")
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
 }
