@@ -25,9 +25,7 @@ The project is structured as a multi-module Android application to ensure a clea
     4.  Implement a listener (`ICloudEventListener`) to receive callbacks from the service when a command is received from the cloud.
 
 *   ### `:shared-api` (Shared Interface Library)
-    This is the most critical module for ensuring the system works. It is a simple Android Library module that contains the "contract" for the communication between the service and its clients.
-    1.  It contains the AIDL files (`.aidl`) that define the interfaces (`ICloudConnectService`, `ICloudEventListener`).
-    2.  It also contains the Kotlin definition for any custom data types that need to be sent across the process boundary (e.g., `CloudEventParcel.kt`).
+    This is the most critical module for ensuring the system works. It is a simple Android Library module that contains the "contract" for the communication between the service and its clients. It contains the AIDL files that define the interfaces and the Kotlin definitions for any custom data types.
     
     Both the `:app` and `:client` modules depend on this library. This guarantees that they are always compiled against the exact same interface, preventing runtime mismatches.
 
@@ -41,38 +39,37 @@ The project is structured as a multi-module Android application to ensure a clea
 
 ## Security Model
 
-Interaction between external apps and the DCC service is protected by a custom, `signature`-level Android permission. This is a robust security model that ensures only trusted applications can bind to the service.
+Interaction between external apps and the DCC service is protected by a custom Android permission. The protection level can be configured for development or production use.
 
-Here's how it works:
+### Development Mode (`normal`)
 
-1.  **Permission Definition (`:app` module):**
-    The `app` module's manifest defines a custom permission with a `protectionLevel` of `signature`.
-    ```
-    <permission
-        android:name="com.artmedical.permission.BIND_DCC"
-        android:protectionLevel="signature" />
-    ```
-    This tells the Android OS that this permission can only be granted to apps signed with the **exact same digital certificate** as the `app` module itself.
+**The project is currently configured for development.** The `app` module's manifest defines the permission with a `protectionLevel` of `normal`.
 
-2.  **Service Protection (`:app` module):**
-    The `ConnectivityService` is protected by this custom permission.
-    ```
-    <service
-        ...
-        android:permission="com.artmedical.permission.BIND_DCC">
-    </service>
-    ```
-    The OS will now enforce that only apps granted the `BIND_DCC` permission can start or bind to this service.
+```xml
+<!-- WARNING: For development only. Change back to "signature" for release. -->
+<permission
+    android:name="com.artmedical.permission.BIND_DCC"
+    android:protectionLevel="normal" />
+```
 
-3.  **Permission Request (`:client` module):**
-    Any client app wishing to connect must request this permission in its own manifest.
-    ```
-    <uses-permission android:name="com.artmedical.permission.BIND_DCC" />
-    ```
+This is a permissive level that allows **any application** that requests the permission in its manifest to bind to the service. This is useful for development, as it allows multiple developers to test their client apps without needing to share a signing key.
 
-When a client app is installed, the Android OS checks if its signing certificate matches the `dcc` app's certificate. If they match, the permission is granted automatically. If they do not match, the permission is denied, and any attempt to bind will fail with a `SecurityException`.
+### Production Mode (`signature`)
 
-**In summary: To allow another app to use the DCC service, you must sign its APK with the same release key (`.keystore` file) that you use to sign the main `dcc` app.**
+For a production release, the `protectionLevel` **must** be changed to `signature`.
+
+```xml
+<permission
+    android:name="com.artmedical.permission.BIND_DCC"
+    android:protectionLevel="signature" />
+```
+
+This is a robust security model that tells the Android OS to only grant the permission to apps that are signed with the **exact same digital certificate** as the `:app` module. This ensures that only your own trusted suite of applications can interact with the service.
+
+Any client app wishing to connect must still request this permission in its own manifest:
+```xml
+<uses-permission android:name="com.artmedical.permission.BIND_DCC" />
+```
 
 ## Getting Started
 
@@ -108,8 +105,8 @@ This will compile all three modules and produce two APK files: `app-debug.apk` a
 
 You must install both applications on the same device or emulator.
 
-1.  **Install the Service App:** Install the `app` module. You can do this from Android Studio by selecting the `app` run configuration and clicking "Run". Since it has no UI, it will install and then stop.
-2.  **Install and Run the Client App:** Install and run the `client` module by selecting its run configuration and clicking "Run".
+1.  **Install the Service App:** Install the `:app` module from Android Studio. Since it has no UI, it will just install.
+2.  **Install and Run the Client App:** Install and run the `:client` module from Android Studio.
 3.  **Using the Client:**
     *   Click the **"Bind to DCC Service"** button. The service will start (you will see a persistent notification), and the status text will change to "Connected".
     *   Click the **"Publish 'Patient Weight' Event"** button. This will send a message through the service to AWS IoT. You can view this message in the AWS IoT Console's MQTT Test Client by subscribing to the topic `pump-fleet/#`.

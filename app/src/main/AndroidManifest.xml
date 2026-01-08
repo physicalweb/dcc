@@ -4,10 +4,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-
     <permission
         android:name="com.artmedical.permission.BIND_DCC"
-        android:protectionLevel="signature" />
+        android:protectionLevel="normal" /> 
+        <!-- WARNING: For development only. Change back to "signature" for release. -->
 
     <application
         android:allowBackup="true"
