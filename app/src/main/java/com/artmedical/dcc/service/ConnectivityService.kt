@@ -226,6 +226,7 @@ class ConnectivityService : Service() {
                             Log.d(tag, "Uploading to Cloud -> Topic: $topic")
                             database.eventDao().delete(event)
                             success = true
+                        } catch (e: Exception) {
                             Log.e(tag, "Upload failed", e)
                         }
 
