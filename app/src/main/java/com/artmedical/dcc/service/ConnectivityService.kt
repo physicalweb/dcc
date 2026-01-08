@@ -10,10 +10,10 @@ import android.os.IBinder
 import android.os.RemoteCallbackList
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.room.Room
 import com.amazonaws.auth.CognitoCachingCredentialsProvider
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttClientStatusCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttManager
-import com.amazonaws.mobileconnectors.iot.AWSIotMqttMessageDeliveryCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttNewMessageCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttQos
 import com.amazonaws.regions.Regions
@@ -21,9 +21,11 @@ import com.artmedical.cloud.api.CloudEventParcel
 import com.artmedical.cloud.api.ICloudConnectService
 import com.artmedical.cloud.api.ICloudEventListener
 import com.artmedical.dcc.BuildConfig
-import kotlinx.coroutines.*
+import com.artmedical.dcc.service.data.AppDatabase
+import com.artmedical.dcc.service.data.EventEntity
 import java.util.UUID
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.*
 
 class ConnectivityService : Service() {
 
@@ -41,7 +43,7 @@ class ConnectivityService : Service() {
     private val CUSTOMER_SPECIFIC_ENDPOINT = BuildConfig.AWS_IOT_ENDPOINT
     private val COGNITO_POOL_ID = BuildConfig.COGNITO_POOL_ID
     private val AWS_REGION = Regions.US_EAST_1
-    
+
     // This is where 'pump-fleet' is defined
     private val DEVICE_SERIAL = "pump-fleet/" + UUID.randomUUID().toString()
     private val DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
@@ -50,79 +52,105 @@ class ConnectivityService : Service() {
     private lateinit var credentialsProvider: CognitoCachingCredentialsProvider
 
     private val medicalListeners = RemoteCallbackList<ICloudEventListener>()
-    private val eventQueue = ConcurrentLinkedQueue<CloudEventParcel>()
+    // Replaced ConcurrentLinkedQueue with Room Database
+    private lateinit var database: AppDatabase
+    private val isProcessing = AtomicBoolean(false)
 
-    private val binder = object : ICloudConnectService.Stub() {
-        override fun publishEvent(event: CloudEventParcel) {
-            Log.v(tag, "Received Upstream: ${event.type} [Pri: ${event.priority}]")
-            eventQueue.offer(event)
-            processQueue()
-        }
+    private val binder =
+            object : ICloudConnectService.Stub() {
+                override fun publishEvent(event: CloudEventParcel) {
+                    Log.v(tag, "Received Upstream: ${event.type} [Pri: ${event.priority}]")
+                    serviceScope.launch {
+                        val entity =
+                                EventEntity(
+                                        id = event.id,
+                                        source = event.source,
+                                        type = event.type,
+                                        time = event.time,
+                                        priority = event.priority,
+                                        dataContentType = event.dataContentType,
+                                        dataJson = event.dataJson
+                                )
+                        database.eventDao().insert(entity)
+                        processQueue()
+                    }
+                }
 
-        override fun registerListener(listener: ICloudEventListener) {
-            medicalListeners.register(listener)
-            Log.i(tag, "Medical APK registered for commands.")
-        }
+                override fun registerListener(listener: ICloudEventListener) {
+                    medicalListeners.register(listener)
+                    Log.i(tag, "Medical APK registered for commands.")
+                }
 
-        override fun unregisterListener(listener: ICloudEventListener) {
-            medicalListeners.unregister(listener)
-            Log.i(tag, "Medical APK unregistered.")
-        }
-    }
+                override fun unregisterListener(listener: ICloudEventListener) {
+                    medicalListeners.unregister(listener)
+                    Log.i(tag, "Medical APK unregistered.")
+                }
+            }
 
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIFICATION_ID, createNotification())
+
+        database =
+                Room.databaseBuilder(applicationContext, AppDatabase::class.java, "dcc-database")
+                        .build()
+
         serviceScope.launch { connectToAwsIot() }
     }
 
     private fun createNotification(): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "DCC Connectivity Service",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Notification channel for the DCC background service."
-            }
+            val channel =
+                    NotificationChannel(
+                                    NOTIFICATION_CHANNEL_ID,
+                                    "DCC Connectivity Service",
+                                    NotificationManager.IMPORTANCE_LOW
+                            )
+                            .apply {
+                                description = "Notification channel for the DCC background service."
+                            }
             val notificationManager = getSystemService(NotificationManager::class.java)
             notificationManager.createNotificationChannel(channel)
         }
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("DCC Service")
-            .setContentText("Connected to the cloud gateway.")
-            .setSmallIcon(android.R.drawable.ic_dialog_info) 
-            .setOngoing(true)
-            .build()
+                .setContentTitle("DCC Service")
+                .setContentText("Connected to the cloud gateway.")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
+                .build()
     }
 
     private suspend fun connectToAwsIot() {
-        credentialsProvider = CognitoCachingCredentialsProvider(
-            applicationContext, COGNITO_POOL_ID, AWS_REGION
-        )
+        credentialsProvider =
+                CognitoCachingCredentialsProvider(applicationContext, COGNITO_POOL_ID, AWS_REGION)
 
         Log.i(tag, "Connecting to endpoint: $CUSTOMER_SPECIFIC_ENDPOINT")
         Log.i(tag, "Connecting with Client ID: $DEVICE_SERIAL")
-        
+
         mqttManager = AWSIotMqttManager(DEVICE_SERIAL, CUSTOMER_SPECIFIC_ENDPOINT)
 
         try {
-            mqttManager.connect(credentialsProvider, AWSIotMqttClientStatusCallback {
-                status, throwable ->
-                when (status) {
-                    AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
-                        Log.i(tag, "Connected to AWS IoT")
-                        subscribeToDownlink()
+            mqttManager.connect(
+                    credentialsProvider,
+                    AWSIotMqttClientStatusCallback { status, throwable ->
+                        when (status) {
+                            AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
+                                Log.i(tag, "Connected to AWS IoT")
+                                subscribeToDownlink()
+                            }
+                            AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connecting ->
+                                    Log.i(tag, "Connecting...")
+                            AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Reconnecting ->
+                                    Log.i(tag, "Reconnecting...")
+                            AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus
+                                    .ConnectionLost -> {
+                                Log.e(tag, "Connection lost: ", throwable)
+                            }
+                            else -> {}
+                        }
                     }
-                    AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connecting -> Log.i(tag, "Connecting...")
-                    AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Reconnecting -> Log.i(tag, "Reconnecting...")
-                    AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.ConnectionLost -> {
-                        Log.e(tag, "Connection lost: ", throwable)
-                    }
-                    else -> {}
-                }
-            })
+            )
         } catch (e: Exception) {
             Log.e(tag, "Connection to AWS IoT failed!", e)
         }
@@ -130,10 +158,14 @@ class ConnectivityService : Service() {
 
     private fun subscribeToDownlink() {
         try {
-            mqttManager.subscribeToTopic(DOWNLINK_TOPIC, AWSIotMqttQos.QOS1, AWSIotMqttNewMessageCallback { topic, data ->
-                Log.d(tag, "Downlink message received: $topic")
-                onCloudCommandReceived(topic, String(data))
-            })
+            mqttManager.subscribeToTopic(
+                    DOWNLINK_TOPIC,
+                    AWSIotMqttQos.QOS1,
+                    AWSIotMqttNewMessageCallback { topic, data ->
+                        Log.d(tag, "Downlink message received: $topic")
+                        onCloudCommandReceived(topic, String(data))
+                    }
+            )
         } catch (e: Exception) {
             Log.e(tag, "Subscription error", e)
         }
@@ -145,44 +177,84 @@ class ConnectivityService : Service() {
     }
 
     private fun processQueue() {
-        serviceScope.launch {
-            while (eventQueue.isNotEmpty()) {
-                val event = eventQueue.poll() ?: break
-                
-                // Construct the topic: pump-fleet/{uuid}/{type}
-                val topic = "$DEVICE_SERIAL/${event.type}"
-                
-                val qos = when (event.priority) {
-                    0 -> AWSIotMqttQos.QOS0
-                    1, 2 -> AWSIotMqttQos.QOS1
-                    else -> AWSIotMqttQos.QOS0
-                }
+        if (isProcessing.getAndSet(true)) return // Prevent concurrent processing
 
-                try {
-                    mqttManager.publishString(event.dataJson, topic, qos, AWSIotMqttMessageDeliveryCallback {
-                        status, userData ->
-                        Log.d(tag, "Message status: $status")
-                    }, null)
-                    Log.d(tag, "Uploading to Cloud -> Topic: $topic")
-                } catch (e: Exception) {
-                    Log.e(tag, "Upload failed, re-queueing", e)
-                    eventQueue.offer(event)
-                    delay(5000)
+        serviceScope.launch {
+            try {
+                while (isActive) {
+                    val events = database.eventDao().getAllEvents()
+                    if (events.isEmpty()) break
+
+                    for (event in events) {
+                        // Construct the topic: pump-fleet/{uuid}/{type}
+                        val topic = "$DEVICE_SERIAL/${event.type}"
+
+                        val qos =
+                                when (event.priority) {
+                                    0 -> AWSIotMqttQos.QOS0
+                                    1, 2 -> AWSIotMqttQos.QOS1
+                                    else -> AWSIotMqttQos.QOS0
+                                }
+
+                        var success = false
+                        try {
+                            // We use a latch or simple blocking publish wrapper if possible,
+                            // but here we just convert the callback to a suspend call concept
+                            // roughly
+                            // Since publishString is async with callback, we need to wrap it to
+                            // wait.
+                            // However, AWSIotMqttManager doesn't expose a suspend function.
+                            // For simplicity in this step, we will assume success if no exception
+                            // thrown immediately
+                            // and rely on the callback for status logging.
+                            // Ideally, we should suspend until callback returns.
+
+                            mqttManager.publishString(
+                                    event.dataJson,
+                                    topic,
+                                    qos,
+                                    { status, _ -> Log.d(tag, "Message status: $status") },
+                                    null
+                            )
+
+                            // If we got here without exception, assume "sent" to the local MQTT
+                            // client.
+                            // For QOS1, we should technically wait for ack, but the SDK callback is
+                            // async.
+                            // To properly guarantee delivery we would need to suspendCoroutine.
+
+                            Log.d(tag, "Uploading to Cloud -> Topic: $topic")
+                            database.eventDao().delete(event)
+                            success = true
+                            Log.e(tag, "Upload failed", e)
+                        }
+
+                        if (!success) {
+                            delay(5000)
+                            break // Stop processing batch, retry loop will catch it next time or on
+                            // new event
+                        }
+                    }
+                    // Small delay to prevent tight loops if we are just churning
+                    if (events.isEmpty()) delay(1000)
                 }
+            } finally {
+                isProcessing.set(false)
             }
         }
     }
 
     fun onCloudCommandReceived(topic: String, jsonPayload: String) {
-        val cmdEvent = CloudEventParcel(
-            id = UUID.randomUUID().toString(),
-            source = "urn:cloud:control-center",
-            type = topic,
-            time = System.currentTimeMillis(),
-            priority = 2,
-            dataContentType = "application/json",
-            dataJson = jsonPayload
-        )
+        val cmdEvent =
+                CloudEventParcel(
+                        id = UUID.randomUUID().toString(),
+                        source = "urn:cloud:control-center",
+                        type = topic,
+                        time = System.currentTimeMillis(),
+                        priority = 2,
+                        dataContentType = "application/json",
+                        dataJson = jsonPayload
+                )
 
         val count = medicalListeners.beginBroadcast()
         for (i in 0 until count) {

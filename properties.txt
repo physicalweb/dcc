@@ -1,0 +1,137 @@
+
+> Task :app:properties
+
+------------------------------------------------------------
+Project ':app'
+------------------------------------------------------------
+
+_agp_internal_DesugarLibConfigExtractor_registered: true
+_kgp_internal_kotlin_compile_transforms_registered: true
+allprojects: [project ':app']
+android: extension 'android'
+android.nonTransitiveRClass: true
+android.useAndroidX: true
+androidComponents: extension 'androidComponents'
+ant: org.gradle.api.internal.project.DefaultAntBuilder@7e1a38da
+antBuilderFactory: org.gradle.api.internal.project.DefaultAntBuilderFactory@49a9fda3
+archivesBaseName: app
+artifacts: org.gradle.api.internal.artifacts.dsl.DefaultArtifactHandler_Decorated@f8ecaa3
+asDynamicObject: DynamicObject for project ':app'
+autoTargetJvmDisabled: false
+base: extension 'base'
+baseClassLoaderScope: org.gradle.api.internal.initialization.DefaultClassLoaderScope@466b9b48
+buildDir: /Users/arnonzangvil/dev/dcc/dcc/app/build
+buildFile: /Users/arnonzangvil/dev/dcc/dcc/app/build.gradle.kts
+buildOutputs: BaseVariantOutput container
+buildPath: :
+buildScriptSource: org.gradle.groovy.scripts.TextResourceScriptSource@6918b7b7
+buildTreePath: :app
+buildscript: org.gradle.api.internal.initialization.DefaultScriptHandler_Decorated@6f5a1bd2
+childProjects: {}
+childProjectsUnchecked: {}
+class: class org.gradle.api.internal.project.DefaultProject_Decorated
+classLoaderScope: org.gradle.api.internal.initialization.DefaultClassLoaderScope@a5c9676
+clean: task ':app:clean'
+components: SoftwareComponent container
+configurationActions: org.gradle.configuration.project.DefaultProjectConfigurationActionContainer@16f81f48
+configurationTargetIdentifier: org.gradle.configuration.ConfigurationTargetIdentifier$1@cd37704
+configurations: configuration container for project ':app'
+convention: org.gradle.internal.extensibility.DefaultConvention@20dacc26
+crossProjectModelAccess: org.gradle.api.internal.project.DefaultCrossProjectModelAccess@1fe1c764
+defaultArtifacts: extension 'defaultArtifacts'
+defaultTasks: []
+deferredProjectConfiguration: org.gradle.api.internal.project.DeferredProjectConfiguration@4935898f
+dependencies: org.gradle.api.internal.artifacts.dsl.dependencies.DefaultDependencyHandler_Decorated@5e49bcfa
+dependencyFactory: org.gradle.api.internal.artifacts.DefaultDependencyFactory@2804f0e9
+dependencyLocking: org.gradle.internal.locking.DefaultDependencyLockingHandler_Decorated@394fd86a
+depth: 1
+description: null
+detachedState: false
+displayName: project ':app'
+distsDirName: distributions
+distsDirectory: extension 'base' property 'distsDirectory'
+docsDir: /Users/arnonzangvil/dev/dcc/dcc/app/build/docs
+docsDirName: docs
+ext: org.gradle.internal.extensibility.DefaultExtraPropertiesExtension@4f6e8e31
+extensions: org.gradle.internal.extensibility.DefaultConvention@20dacc26
+fileOperations: org.gradle.api.internal.file.DefaultFileOperations@4062ac8d
+fileResolver: org.gradle.api.internal.file.BaseDirFileResolver@7a9a063
+gradle: build 'dcc'
+gradleKotlinDsl.accessorsClassPath: AccessorsClassPath(bin=[/Users/arnonzangvil/.gradle/caches/8.13/kotlin-dsl/accessors/d72e01deb827c005e83c417d9c167889/classes], src=[/Users/arnonzangvil/.gradle/caches/8.13/kotlin-dsl/accessors/d72e01deb827c005e83c417d9c167889/sources])
+group: dcc
+identityPath: :app
+inheritedScope: org.gradle.internal.extensibility.ExtensibleDynamicObject$InheritedDynamicObject@41857514
+internalStatus: property(java.lang.Object, fixed(class java.lang.String, integration))
+isolated: DefaultIsolatedProject{project ':app'}
+java: extension 'java'
+javaToolchains: extension 'javaToolchains'
+kotlin: extension 'kotlin'
+kotlin.code.style: official
+kotlin.plugin.loaded.in.projects.1.9.22: :app
+kotlin.properties.provider: org.jetbrains.kotlin.gradle.plugin.PropertiesProvider@2f72b91e
+kotlinTestRegistry: org.jetbrains.kotlin.gradle.testing.internal.KotlinTestsRegistry@6592be2b
+ksp: extension 'ksp'
+layout: org.gradle.api.internal.file.DefaultProjectLayout@fd55a58
+libs: extension 'libs'
+libsDirName: libs
+libsDirectory: extension 'base' property 'libsDirectory'
+lifecycleActionsState: null
+lintLifecycle: extension 'lintLifecycle'
+listenerBuildOperationDecorator: org.gradle.configuration.internal.DefaultListenerBuildOperationDecorator@44a54ade
+logger: org.gradle.internal.logging.slf4j.OutputEventListenerBackedLogger@792c2277
+logging: org.gradle.internal.logging.services.DefaultLoggingManager@34b6c787
+model: project ':app'
+modelIdentityDisplayName: null
+modelRegistry: org.gradle.model.internal.registry.DefaultModelRegistry@11945cd3
+name: app
+normalization: org.gradle.normalization.internal.DefaultInputNormalizationHandler_Decorated@42501772
+objects: org.gradle.api.internal.model.DefaultObjectFactory@2ccd565c
+org.gradle.jvmargs: -Xmx2048m -Dfile.encoding=UTF-8
+org.jetbrains.kotlin.gradle.plugin.KotlinPluginLifecycle: Kotlin Plugin Lifecycle: (project ':app') stage 'ReadyForExecution' *finished successfully*
+owner: project ':app'
+parent: root project 'dcc'
+parentIdentifier: root project 'dcc'
+path: :app
+pluginContext: false
+pluginManager: org.gradle.api.internal.plugins.DefaultPluginManager_Decorated@2ec526bd
+plugins: Plugin collection
+processOperations: org.gradle.process.internal.DefaultExecActionFactory@1d048572
+project: project ':app'
+projectConfigurator: org.gradle.api.internal.project.BuildOperationCrossProjectConfigurator@5f2dea27
+projectDir: /Users/arnonzangvil/dev/dcc/dcc/app
+projectEvaluationBroadcaster: ProjectEvaluationListener broadcast
+projectEvaluator: org.gradle.configuration.project.LifecycleProjectEvaluator@19143828
+projectIdentity: project :app
+projectPath: :app
+properties: {...}
+providers: org.gradle.api.internal.provider.DefaultProviderFactory_Decorated@1e631579
+reporting: extension 'reporting'
+repositories: repository container
+resources: org.gradle.api.internal.resources.DefaultResourceHandler@27752cd2
+rootDir: /Users/arnonzangvil/dev/dcc/dcc
+rootProject: root project 'dcc'
+rootScript: false
+script: false
+scriptHandlerFactory: org.gradle.api.internal.initialization.DefaultScriptHandlerFactory@17b986c9
+scriptPluginFactory: org.gradle.configuration.ScriptPluginFactorySelector@2f54396e
+serviceRegistryFactory: org.gradle.internal.service.scopes.BuildScopeServiceRegistryFactory@299a3920
+services: project services
+sourceCompatibility: 21
+sourceSets: SourceSet container
+standardOutputCapture: org.gradle.internal.logging.services.DefaultLoggingManager@34b6c787
+state: project state 'EXECUTED'
+status: integration
+subprojects: []
+targetCompatibility: 21
+taskDependencyFactory: org.gradle.api.internal.tasks.DefaultTaskDependencyFactory@2707837d
+taskThatOwnsThisObject: null
+tasks: task set
+testReportDir: /Users/arnonzangvil/dev/dcc/dcc/app/build/reports/tests
+testReportDirName: tests
+testResultsDir: /Users/arnonzangvil/dev/dcc/dcc/app/build/test-results
+testResultsDirName: test-results
+version: unspecified
+versionCatalogs: extension 'versionCatalogs'
+
+BUILD SUCCESSFUL in 551ms
+1 actionable task: 1 executed
