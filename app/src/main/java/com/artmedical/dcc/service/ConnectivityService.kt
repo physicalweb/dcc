@@ -14,6 +14,7 @@ import androidx.room.Room
 import com.amazonaws.auth.CognitoCachingCredentialsProvider
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttClientStatusCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttManager
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttMessageDeliveryCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttNewMessageCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttQos
 import com.amazonaws.regions.Regions
@@ -196,51 +197,55 @@ class ConnectivityService : Service() {
                                     else -> AWSIotMqttQos.QOS0
                                 }
 
-                        var success = false
-                        try {
-                            // We use a latch or simple blocking publish wrapper if possible,
-                            // but here we just convert the callback to a suspend call concept
-                            // roughly
-                            // Since publishString is async with callback, we need to wrap it to
-                            // wait.
-                            // However, AWSIotMqttManager doesn't expose a suspend function.
-                            // For simplicity in this step, we will assume success if no exception
-                            // thrown immediately
-                            // and rely on the callback for status logging.
-                            // Ideally, we should suspend until callback returns.
+                        // Critical Fix: Wait for callback before deleting
+                        val success = publishStringSuspending(event.dataJson, topic, qos)
 
-                            mqttManager.publishString(
-                                    event.dataJson,
-                                    topic,
-                                    qos,
-                                    { status, _ -> Log.d(tag, "Message status: $status") },
-                                    null
-                            )
-
-                            // If we got here without exception, assume "sent" to the local MQTT
-                            // client.
-                            // For QOS1, we should technically wait for ack, but the SDK callback is
-                            // async.
-                            // To properly guarantee delivery we would need to suspendCoroutine.
-
+                        if (success) {
                             Log.d(tag, "Uploading to Cloud -> Topic: $topic")
                             database.eventDao().delete(event)
-                            success = true
-                        } catch (e: Exception) {
-                            Log.e(tag, "Upload failed", e)
-                        }
-
-                        if (!success) {
+                        } else {
+                            Log.e(tag, "Upload failed for ${event.id}")
                             delay(5000)
-                            break // Stop processing batch, retry loop will catch it next time or on
-                            // new event
+                            break // Stop processing, retry later
                         }
                     }
-                    // Small delay to prevent tight loops if we are just churning
                     if (events.isEmpty()) delay(1000)
                 }
             } finally {
                 isProcessing.set(false)
+            }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun publishStringSuspending(
+            payload: String,
+            topic: String,
+            qos: AWSIotMqttQos
+    ): Boolean = suspendCancellableCoroutine { continuation ->
+        try {
+            mqttManager.publishString(
+                    payload,
+                    topic,
+                    qos,
+                    { status, _ ->
+                        if (continuation.isActive) {
+                            val isSuccess =
+                                    status ==
+                                            AWSIotMqttMessageDeliveryCallback.MessageDeliveryStatus
+                                                    .Success
+                            if (!isSuccess) {
+                                Log.w(tag, "MQTT Delivery Status: $status")
+                            }
+                            continuation.resume(isSuccess, null)
+                        }
+                    },
+                    null
+            )
+        } catch (e: Exception) {
+            Log.e(tag, "Exception during publishString", e)
+            if (continuation.isActive) {
+                continuation.resume(false, null)
             }
         }
     }
