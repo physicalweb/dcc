@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import android.os.RemoteCallbackList
@@ -55,11 +57,19 @@ class ConnectivityService : Service() {
 
     private lateinit var mqttManager: AWSIotMqttManager
     private lateinit var credentialsProvider: CognitoCachingCredentialsProvider
+    private lateinit var connectivityManager: ConnectivityManager
 
     private val medicalListeners = RemoteCallbackList<ICloudEventListener>()
-    // Replaced ConcurrentLinkedQueue with Room Database
     private lateinit var database: AppDatabase
     private val isProcessing = AtomicBoolean(false)
+
+    private val networkCallback =
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.i(tag, "Network available, triggering queue processing.")
+                    processQueue()
+                }
+            }
 
     private val binder =
             object : ICloudConnectService.Stub() {
@@ -112,6 +122,9 @@ class ConnectivityService : Service() {
                 Room.databaseBuilder(applicationContext, AppDatabase::class.java, "dcc-database")
                         .build()
 
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
+
         serviceScope.launch { connectToAwsIot() }
     }
 
@@ -155,6 +168,7 @@ class ConnectivityService : Service() {
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
                                 Log.i(tag, "Connected to AWS IoT")
                                 subscribeToDownlink()
+                                processQueue() // Trigger queue on connection
                             }
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connecting ->
                                     Log.i(tag, "Connecting...")
@@ -199,69 +213,87 @@ class ConnectivityService : Service() {
         serviceScope.launch {
             try {
                 while (isActive) {
-                    val events = database.eventDao().getAllEvents()
-                    if (events.isEmpty()) break
-
-                    for (event in events) {
-                        // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
-                        val topic = "$BASIC_INGEST_PREFIX/$DEVICE_SERIAL/${event.type}"
-
-                        val qos =
-                                when (event.priority) {
-                                    0 -> AWSIotMqttQos.QOS0
-                                    1, 2 -> AWSIotMqttQos.QOS1
-                                    else -> AWSIotMqttQos.QOS0
-                                }
-
-                        // Critical Fix: Wait for callback before deleting
-                        val success = publishStringSuspending(event.dataJson, topic, qos)
-
-                        if (success) {
-                            Log.d(tag, "Uploading to Cloud -> Topic: $topic")
-                            database.eventDao().delete(event)
+                    // 1. Fast Lane: Drain all high priority events first
+                    var highPriEvent = database.eventDao().getNextHighPriorityEvent()
+                    while (highPriEvent != null && isActive) {
+                        if (uploadEventSafely(highPriEvent)) {
+                            // Success: check for more high priority events immediately
+                            highPriEvent = database.eventDao().getNextHighPriorityEvent()
                         } else {
-                            Log.e(tag, "Upload failed for ${event.id}")
-                            delay(5000)
-                            break // Stop processing, retry later
+                            // Failure: break inner loop to retry later (network likely down)
+                            break
                         }
                     }
-                    if (events.isEmpty()) delay(1000)
+
+                    // If we broke out due to error or shutdown, stop outer loop too
+                    if (highPriEvent != null) break
+
+                    // 2. Slow Lane: Process ONE low priority event
+                    val lowPriEvent = database.eventDao().getNextLowPriorityEvent()
+                    if (lowPriEvent != null && isActive) {
+                        if (!uploadEventSafely(lowPriEvent)) {
+                            // Failure: break outer loop
+                            break
+                        }
+                        // Success: Loop back to top to check High Priority queue again
+                    } else {
+                        // Queue is empty (both High and Low priority)
+                        break
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(tag, "Error in processing loop", e)
             } finally {
                 isProcessing.set(false)
             }
         }
     }
 
+    /**
+     * Uploads an event and waits for the MQTT callback before returning result. Deletes the event
+     * from DB only on success.
+     */
     @OptIn(ExperimentalCoroutinesApi::class)
-    private suspend fun publishStringSuspending(
-            payload: String,
-            topic: String,
-            qos: AWSIotMqttQos
-    ): Boolean = suspendCancellableCoroutine { continuation ->
-        try {
-            mqttManager.publishString(
-                    payload,
-                    topic,
-                    qos,
-                    { status, _ ->
-                        if (continuation.isActive) {
-                            val isSuccess =
-                                    status ==
-                                            AWSIotMqttMessageDeliveryCallback.MessageDeliveryStatus
-                                                    .Success
-                            if (!isSuccess) {
-                                Log.w(tag, "MQTT Delivery Status: $status")
+    private suspend fun uploadEventSafely(event: EventEntity): Boolean {
+        // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
+        val topic = "$BASIC_INGEST_PREFIX/$DEVICE_SERIAL/${event.type}"
+
+        val qos =
+                when (event.priority) {
+                    0 -> AWSIotMqttQos.QOS0
+                    1, 2 -> AWSIotMqttQos.QOS1
+                    else -> AWSIotMqttQos.QOS0
+                }
+
+        return suspendCancellableCoroutine { continuation ->
+            try {
+                mqttManager.publishString(
+                        event.dataJson,
+                        topic,
+                        qos,
+                        { status, _ ->
+                            if (continuation.isActive) {
+                                val isSuccess =
+                                        status ==
+                                                AWSIotMqttMessageDeliveryCallback
+                                                        .MessageDeliveryStatus.Success
+                                if (isSuccess) {
+                                    Log.d(tag, "Uploaded: $topic")
+                                    // Clean up DB *only* after confirmed success
+                                    serviceScope.launch { database.eventDao().delete(event) }
+                                } else {
+                                    Log.w(tag, "Delivery failed: $status")
+                                }
+                                continuation.resume(isSuccess, null)
                             }
-                            continuation.resume(isSuccess, null)
-                        }
-                    },
-                    null
-            )
-        } catch (e: Exception) {
-            Log.e(tag, "Exception during publishString", e)
-            if (continuation.isActive) {
-                continuation.resume(false, null)
+                        },
+                        null
+                )
+            } catch (e: Exception) {
+                Log.e(tag, "Exception during publish", e)
+                if (continuation.isActive) {
+                    continuation.resume(false, null)
+                }
             }
         }
     }
@@ -292,9 +324,10 @@ class ConnectivityService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try {
+            connectivityManager.unregisterNetworkCallback(networkCallback)
             mqttManager.disconnect()
         } catch (e: Exception) {
-            Log.e(tag, "Error disconnecting MQTT client", e)
+            Log.e(tag, "Error disconnecting", e)
         }
         serviceScope.cancel()
         medicalListeners.kill()
