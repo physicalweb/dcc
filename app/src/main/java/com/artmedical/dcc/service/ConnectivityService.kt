@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
@@ -46,12 +45,9 @@ class ConnectivityService : Service() {
     private val COGNITO_POOL_ID = BuildConfig.COGNITO_POOL_ID
     private val AWS_REGION = Regions.US_EAST_1
 
-    // Stable device identity — UUID generated once, persisted in SharedPreferences
-    private lateinit var DEVICE_SERIAL: String
-    private lateinit var DOWNLINK_TOPIC: String
-
-    // Basic Ingest prefix — bypasses broker, routes directly to IoT Rule ($0.08/M vs $1.00/M)
-    private val BASIC_INGEST_PREFIX = "\$aws/rules/smart_ingest"
+    // This is where 'pump-fleet' is defined
+    private val DEVICE_SERIAL = "pump-fleet/" + UUID.randomUUID().toString()
+    private val DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
 
     private lateinit var mqttManager: AWSIotMqttManager
     private lateinit var credentialsProvider: CognitoCachingCredentialsProvider
@@ -95,18 +91,6 @@ class ConnectivityService : Service() {
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIFICATION_ID, createNotification())
-
-        // Resolve stable device serial (generate-once, persist in SharedPreferences)
-        val prefs = getSharedPreferences("dcc_device_prefs", Context.MODE_PRIVATE)
-        var serial = prefs.getString("device_serial", null)
-        if (serial == null) {
-            serial = UUID.randomUUID().toString()
-            prefs.edit().putString("device_serial", serial).apply()
-            Log.i(tag, "Generated new device serial: $serial")
-        }
-        DEVICE_SERIAL = "pump-fleet/$serial"
-        DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
-        Log.i(tag, "Device serial: $DEVICE_SERIAL")
 
         database =
                 Room.databaseBuilder(applicationContext, AppDatabase::class.java, "dcc-database")
@@ -203,8 +187,8 @@ class ConnectivityService : Service() {
                     if (events.isEmpty()) break
 
                     for (event in events) {
-                        // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
-                        val topic = "$BASIC_INGEST_PREFIX/$DEVICE_SERIAL/${event.type}"
+                        // Construct the topic: pump-fleet/{uuid}/{type}
+                        val topic = "$DEVICE_SERIAL/${event.type}"
 
                         val qos =
                                 when (event.priority) {
