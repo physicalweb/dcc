@@ -12,10 +12,11 @@ The project is structured as a multi-module Android application to ensure a clea
 
 *   ### `:app` (The DCC Service)
     This is the core of the project. It is an Android application with no user interface (no Activities). Its sole purpose is to run a `ForegroundService` (`ConnectivityService`) that:
-    1.  Manages a persistent connection to a cloud backend (in this case, AWS IoT Core).
+    1.  Manages a persistent connection to AWS IoT Core via MQTT.
     2.  Exposes an AIDL interface (`ICloudConnectService`) that other applications can bind to.
-    3.  Receives data from client apps and publishes it to the cloud.
+    3.  Receives data from client apps, persists them in a Room database, and publishes them to the cloud with priority-based ordering.
     4.  Receives commands from the cloud and forwards them to any bound client apps.
+    5.  Automatically recovers and flushes queued events on network restoration or MQTT reconnect.
 
 *   ### `:client` (Sample Client App)
     This is a standard Android application with a simple UI that demonstrates how to consume the DCC service. It shows how to:
@@ -31,11 +32,15 @@ The project is structured as a multi-module Android application to ensure a clea
 
 ## Key Features
 
-*   **Multi-module Android Project:** Demonstrates a clean, scalable project structure.
+*   **Multi-module Android Project:** Clean, scalable project structure with shared AIDL contracts.
 *   **AIDL for Inter-Process Communication:** Uses Android's native, high-performance IPC mechanism.
-*   **Foreground Service:** Shows the correct way to run persistent background tasks on modern Android.
-*   **AWS IoT Integration:** Includes a full implementation for connecting to AWS IoT Core using Cognito for authentication.
-*   **Kotlin Coroutines:** Used for managing background tasks and asynchronous operations within the service.
+*   **Foreground Service:** Correct implementation of persistent background tasks on modern Android.
+*   **AWS IoT Core + Basic Ingest:** Publishes via `$aws/rules/<rule>/` topics for 12.5× cost reduction ($0.08/M vs $1.00/M). Downlink subscriptions use standard topics.
+*   **Stable Device Identity:** Device serial is a UUID generated once and persisted in `SharedPreferences`, ensuring consistent identity across service restarts.
+*   **Persistent Event Queue (Room):** Events are stored in a Room database before publishing. Events are only deleted after receiving an MQTT delivery acknowledgment, preventing data loss.
+*   **Priority-Based Queue Processing:** High-priority events (alarms, priority ≥ 1) are drained first via a fast lane. Low-priority events (telemetry, priority 0) are processed one at a time, re-checking the high-priority queue between each.
+*   **Network Recovery:** Registers a `ConnectivityManager.NetworkCallback` to automatically flush the queue when network becomes available. Also triggers queue processing on MQTT reconnect.
+*   **Kotlin Coroutines:** `suspendCancellableCoroutine` ensures the service waits for MQTT delivery confirmation before marking events as sent.
 
 ## Security Model
 
@@ -111,13 +116,18 @@ You must install both applications on the same device or emulator.
     *   Click the **"Bind to DCC Service"** button. The service will start (you will see a persistent notification), and the status text will change to "Connected".
     *   Click the **"Publish 'Patient Weight' Event"** button. This will send a message through the service to AWS IoT. You can view this message in the AWS IoT Console's MQTT Test Client by subscribing to the topic `pump-fleet/#`.
 
+## MQTT Topics
+
+*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/{event-type}` — routed via Basic Ingest directly to the `smart_ingest` IoT Rule.
+*   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#` — standard topic for receiving cloud commands.
+
+The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`). The cloud extracts it via `topic(2)` in IoT Rule SQL to partition data by device.
+
 ## Limitations & Future Work
 
-This project is a proof of concept and is not production-ready. Key limitations include:
-
-*   **No Persistent Queue:** If the service cannot reach the cloud, events sent from the client are held in an in-memory queue and will be lost if the service is killed. A production implementation would use a database (like Room) or file-based queue.
-*   **Minimal Error Handling:** The error handling for network issues or invalid data is very basic.
 *   **Hardcoded AWS Region:** The AWS Region is currently hardcoded to `us-east-1` in `ConnectivityService.kt`.
+*   **No Exponential Backoff:** On publish failure, the queue processor stops and waits for a network/reconnect trigger rather than implementing exponential retry.
+*   **Security:** The `BIND_DCC` permission is set to `normal` for development. Must be changed to `signature` for production (see Security Model above).
 
 ## License
 
