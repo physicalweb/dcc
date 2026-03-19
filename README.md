@@ -1,8 +1,8 @@
 # DCC - Decoupled Connectivity Component
 
-This project is a demonstration of a "headless" Android service that provides cloud connectivity to other applications on the same device. It uses Android's native Inter-Process Communication (IPC) mechanism, AIDL, to expose its functionality securely and efficiently.
+A headless Android service that provides cloud connectivity to other applications on the same device via AIDL IPC. Client apps bind to the DCC to publish events and receive commands without bundling any networking or cloud logic themselves.
 
-The primary goal is to create a single, updatable component (the `dcc` app) that manages all cloud communication, while other "client" apps can use its services without needing to bundle any networking or security logic themselves.
+> For cloud-side architecture (IoT Rules, topic routing, data pipeline), see the separate cloud documentation.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ The project is structured as a multi-module Android application to ensure a clea
 
 *   ### `:app` (The DCC Service)
     This is the core of the project. It is an Android application with no user interface (no Activities). Its sole purpose is to run a `ForegroundService` (`ConnectivityService`) that:
-    1.  Manages a persistent connection to AWS IoT Core via MQTT.
+    1.  Manages a persistent MQTT connection to the cloud backend.
     2.  Exposes an AIDL interface (`ICloudConnectService`) that other applications can bind to.
     3.  Receives data from client apps, persists them in a Room database, and publishes them to the cloud with priority-based ordering.
     4.  Receives commands from the cloud and forwards them to any bound client apps.
@@ -32,15 +32,13 @@ The project is structured as a multi-module Android application to ensure a clea
 
 ## Key Features
 
-*   **Multi-module Android Project:** Clean, scalable project structure with shared AIDL contracts.
-*   **AIDL for Inter-Process Communication:** Uses Android's native, high-performance IPC mechanism.
-*   **Foreground Service:** Correct implementation of persistent background tasks on modern Android.
-*   **AWS IoT Core + Basic Ingest:** Publishes via `$aws/rules/<rule>/` topics for 12.5× cost reduction ($0.08/M vs $1.00/M). Downlink subscriptions use standard topics.
-*   **Stable Device Identity:** Device serial is a UUID generated once and persisted in `SharedPreferences`, ensuring consistent identity across service restarts.
-*   **Persistent Event Queue (Room):** Events are stored in a Room database before publishing. Events are only deleted after receiving an MQTT delivery acknowledgment, preventing data loss.
-*   **Priority-Based Queue Processing:** High-priority events (alarms, priority ≥ 1) are drained first via a fast lane. Low-priority events (telemetry, priority 0) are processed one at a time, re-checking the high-priority queue between each.
-*   **Network Recovery:** Registers a `ConnectivityManager.NetworkCallback` to automatically flush the queue when network becomes available. Also triggers queue processing on MQTT reconnect.
-*   **Kotlin Coroutines:** `suspendCancellableCoroutine` ensures the service waits for MQTT delivery confirmation before marking events as sent.
+*   **Multi-module Android Project:** Clean, scalable structure with shared AIDL contracts.
+*   **AIDL IPC:** Android's native, high-performance inter-process communication.
+*   **Foreground Service:** Persistent background connectivity on modern Android.
+*   **Stable Device Identity:** UUID generated once, persisted in `SharedPreferences`, consistent across restarts.
+*   **Persistent Event Queue (Room):** Events survive service restarts; only deleted after MQTT delivery acknowledgment.
+*   **Priority-Based Queue:** High-priority events (alarms) drain first; low-priority (telemetry) processed between priority checks.
+*   **Network Recovery:** Auto-flushes queue on network restoration and MQTT reconnect via `ConnectivityManager.NetworkCallback`.
 
 ## Security Model
 
@@ -81,20 +79,16 @@ Any client app wishing to connect must still request this permission in its own 
 ### Prerequisites
 
 *   Android Studio (latest stable version)
-*   An Amazon Web Services (AWS) account with configured IoT Core and Cognito Identity Pool.
+*   Cloud backend configured (see cloud documentation for setup).
 
 ### 1. Configuration
 
-Before you can build, you must provide your AWS credentials. Create a file named `local.properties` in the root directory of the project (`/dcc/local.properties`) with the following content:
+Create `local.properties` in the project root with your cloud credentials:
 
 ```properties
-# AWS IoT Core Configuration
-AWS_IOT_ENDPOINT=xxxxxxxxxxxxxx-ats.iot.your-region.amazonaws.com
-COGNITO_POOL_ID=your-region:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+AWS_IOT_ENDPOINT=<your-endpoint>
+COGNITO_POOL_ID=<your-pool-id>
 ```
-
-*   `AWS_IOT_ENDPOINT`: The unique endpoint for your AWS IoT Core service. Found in the AWS IoT Console under **Settings**.
-*   `COGNITO_POOL_ID`: The ID of the Cognito Identity Pool used to grant guest access to IoT Core.
 
 ### 2. Build the Project
 
@@ -114,21 +108,20 @@ You must install both applications on the same device or emulator.
 2.  **Install and Run the Client App:** Install and run the `:client` module from Android Studio.
 3.  **Using the Client:**
     *   Click the **"Bind to DCC Service"** button. The service will start (you will see a persistent notification), and the status text will change to "Connected".
-    *   Click the **"Publish 'Patient Weight' Event"** button. This will send a message through the service to AWS IoT. You can view this message in the AWS IoT Console's MQTT Test Client by subscribing to the topic `pump-fleet/#`.
+    *   Click the **"Publish 'Patient Weight' Event"** button to send an event through the service to the cloud.
 
 ## MQTT Topics
 
-*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/{event-type}` — routed via Basic Ingest directly to the `smart_ingest` IoT Rule.
-*   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#` — standard topic for receiving cloud commands.
+*   **Uplink (publish):** `pump-fleet/{device-serial}/{event-type}` (routed via Basic Ingest — see cloud docs)
+*   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#`
 
-The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`). The cloud extracts it via `topic(2)` in IoT Rule SQL to partition data by device.
+The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`).
 
 ## Limitations & Future Work
 
-*   **Hardcoded AWS Region:** The AWS Region is currently hardcoded to `us-east-1` in `ConnectivityService.kt`.
-*   **No Exponential Backoff:** On publish failure, the queue processor stops and waits for a network/reconnect trigger rather than implementing exponential retry.
-*   **Security:** The `BIND_DCC` permission is set to `normal` for development. Must be changed to `signature` for production (see Security Model above).
+*   **Hardcoded Region:** AWS region is hardcoded to `us-east-1` in `ConnectivityService.kt`.
+*   **No Exponential Backoff:** On publish failure, processing stops until the next network/reconnect trigger.
+*   **Dev-mode Security:** `BIND_DCC` permission is set to `normal`. Must change to `signature` for production (see Security Model above).
 
 ## License
 
-This is a public, open-source project intended for demonstration purposes. It contains no proprietary IP. It is recommended to use a standard permissive license like MIT or Apache 2.0 if you intend to publish it.
