@@ -10,6 +10,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.os.RemoteCallbackList
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -24,9 +25,12 @@ import com.amazonaws.regions.Regions
 import com.artmedical.cloud.api.CloudEventParcel
 import com.artmedical.cloud.api.ICloudConnectService
 import com.artmedical.cloud.api.ICloudEventListener
+import com.artmedical.cloud.api.ReportMetadata
 import com.artmedical.dcc.BuildConfig
 import com.artmedical.dcc.service.data.AppDatabase
 import com.artmedical.dcc.service.data.EventEntity
+import com.artmedical.dcc.service.data.ReportEntity
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.*
@@ -62,12 +66,16 @@ class ConnectivityService : Service() {
     private val medicalListeners = RemoteCallbackList<ICloudEventListener>()
     private lateinit var database: AppDatabase
     private val isProcessing = AtomicBoolean(false)
+    private val isProcessingReports = AtomicBoolean(false)
+    private var reportUploadManager: ReportUploadManager? = null
+    private lateinit var rawDeviceSerial: String
 
     private val networkCallback =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.i(tag, "Network available, triggering queue processing.")
                     processQueue()
+                    processReportQueue()
                 }
             }
 
@@ -100,6 +108,45 @@ class ConnectivityService : Service() {
                     medicalListeners.unregister(listener)
                     Log.i(tag, "Medical APK unregistered.")
                 }
+
+                override fun uploadReport(metadata: ReportMetadata, pfd: ParcelFileDescriptor) {
+                    Log.i(tag, "Received report upload: ${metadata.reportId}")
+                    serviceScope.launch {
+                        try {
+                            val reportsDir = File(filesDir, "pending_reports")
+                            reportsDir.mkdirs()
+                            val localFile = File(reportsDir, "${metadata.reportId}.pdf")
+
+                            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                                localFile.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+
+                            val s3Key = ReportUploadManager.computeS3Key(
+                                rawDeviceSerial, metadata.reportDate, metadata.reportId
+                            )
+
+                            val entity = ReportEntity(
+                                reportId = metadata.reportId,
+                                deviceSerial = rawDeviceSerial,
+                                patientId = metadata.patientId,
+                                reportType = metadata.reportType,
+                                reportDate = metadata.reportDate,
+                                generatedAt = metadata.generatedAt,
+                                pageCount = metadata.pageCount,
+                                fileSizeBytes = metadata.fileSizeBytes,
+                                localFilePath = localFile.absolutePath,
+                                s3Key = s3Key,
+                                status = "PENDING"
+                            )
+                            database.reportDao().insert(entity)
+                            processReportQueue()
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to handle report upload", e)
+                        }
+                    }
+                }
             }
 
     override fun onCreate() {
@@ -114,12 +161,14 @@ class ConnectivityService : Service() {
             prefs.edit().putString("device_serial", serial).apply()
             Log.i(tag, "Generated new device serial: $serial")
         }
+        rawDeviceSerial = serial
         DEVICE_SERIAL = "pump-fleet/$serial"
         DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
         Log.i(tag, "Device serial: $DEVICE_SERIAL")
 
         database =
                 Room.databaseBuilder(applicationContext, AppDatabase::class.java, "dcc-database")
+                        .addMigrations(AppDatabase.MIGRATION_1_2)
                         .build()
 
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -155,6 +204,10 @@ class ConnectivityService : Service() {
         credentialsProvider =
                 CognitoCachingCredentialsProvider(applicationContext, COGNITO_POOL_ID, AWS_REGION)
 
+        reportUploadManager = ReportUploadManager(
+            applicationContext, credentialsProvider, database.reportDao()
+        )
+
         Log.i(tag, "Connecting to endpoint: $CUSTOMER_SPECIFIC_ENDPOINT")
         Log.i(tag, "Connecting with Client ID: $DEVICE_SERIAL")
 
@@ -168,7 +221,8 @@ class ConnectivityService : Service() {
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
                                 Log.i(tag, "Connected to AWS IoT")
                                 subscribeToDownlink()
-                                processQueue() // Trigger queue on connection
+                                processQueue()
+                                processReportQueue()
                             }
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connecting ->
                                     Log.i(tag, "Connecting...")
@@ -298,6 +352,65 @@ class ConnectivityService : Service() {
         }
     }
 
+    private fun processReportQueue() {
+        if (isProcessingReports.getAndSet(true)) return
+
+        serviceScope.launch {
+            try {
+                val manager = reportUploadManager
+                if (manager == null) {
+                    Log.w(tag, "ReportUploadManager not initialized yet")
+                    return@launch
+                }
+
+                while (isActive) {
+                    val report = database.reportDao().getNextPendingReport() ?: break
+
+                    if (report.retryCount >= MAX_REPORT_RETRIES) {
+                        database.reportDao().updateStatus(
+                            report.reportId, "FAILED", "Max retries exceeded"
+                        )
+                        continue
+                    }
+
+                    val s3Success = manager.uploadToS3(report)
+                    if (!s3Success) {
+                        database.reportDao().updateStatus(
+                            report.reportId, "FAILED", "S3 upload failed"
+                        )
+                        break
+                    }
+
+                    // Publish MQTT metadata via existing event pipeline
+                    val metadataEvent = EventEntity(
+                        id = UUID.randomUUID().toString(),
+                        source = DEVICE_SERIAL,
+                        type = "report/uploaded",
+                        time = System.currentTimeMillis(),
+                        priority = 1,
+                        dataContentType = "application/json",
+                        dataJson = buildReportMetadataJson(report)
+                    )
+                    database.eventDao().insert(metadataEvent)
+
+                    database.reportDao().setStatus(report.reportId, "UPLOADED")
+                    File(report.localFilePath).delete()
+                    Log.i(tag, "Report uploaded: ${report.reportId}")
+
+                    processQueue()
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Error in report processing loop", e)
+            } finally {
+                isProcessingReports.set(false)
+            }
+        }
+    }
+
+    private fun buildReportMetadataJson(report: ReportEntity): String {
+        return """{"report_id":"${report.reportId}","s3_key":"${report.s3Key}","report_date":"${report.reportDate}","report_type":"${report.reportType}","size_bytes":${report.fileSizeBytes},"timestamp":${System.currentTimeMillis()}}"""
+    }
+
     fun onCloudCommandReceived(topic: String, jsonPayload: String) {
         val cmdEvent =
                 CloudEventParcel(
@@ -319,6 +432,10 @@ class ConnectivityService : Service() {
             }
         }
         medicalListeners.finishBroadcast()
+    }
+
+    companion object {
+        private const val MAX_REPORT_RETRIES = 3
     }
 
     override fun onDestroy() {
