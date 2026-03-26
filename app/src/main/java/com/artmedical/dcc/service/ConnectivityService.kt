@@ -385,7 +385,7 @@ class ConnectivityService : Service() {
                     val metadataEvent = EventEntity(
                         id = UUID.randomUUID().toString(),
                         source = DEVICE_SERIAL,
-                        type = "report/uploaded",
+                        type = "sys/device/${report.deviceSerial}/report",
                         time = System.currentTimeMillis(),
                         priority = 1,
                         dataContentType = "application/json",

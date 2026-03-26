@@ -25,6 +25,10 @@ class MainActivity : AppCompatActivity() {
 
     private val tag = "DCC-Client"
 
+    // Simulated device/patient identifiers (matches simulator convention)
+    private val deviceId = "dev001"
+    private val patientId = "pat001"
+
     private var cloudService: ICloudConnectService? = null
     private var isBound = false
     private var eventCounter = 0
@@ -85,12 +89,23 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(bindButton)
 
-        // --- Event buttons ---
-        val publishButton = Button(this).apply {
-            text = "Publish Weight Event"
-            setOnClickListener { publishWeightEvent() }
+        val statusButton = Button(this).apply {
+            text = "Send Device Status"
+            setOnClickListener { publishDeviceStatus() }
         }
-        layout.addView(publishButton)
+        layout.addView(statusButton)
+
+        val therapyButton = Button(this).apply {
+            text = "Send Therapy Event"
+            setOnClickListener { publishTherapyEvent() }
+        }
+        layout.addView(therapyButton)
+
+        val alarmButton = Button(this).apply {
+            text = "Send Safety Alarm"
+            setOnClickListener { publishAlarmEvent() }
+        }
+        layout.addView(alarmButton)
 
         val burstButton = Button(this).apply {
             text = "Burst: 10 Mixed Events"
@@ -98,13 +113,6 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(burstButton)
 
-        val alarmButton = Button(this).apply {
-            text = "Publish High-Priority Alarm"
-            setOnClickListener { publishAlarmEvent() }
-        }
-        layout.addView(alarmButton)
-
-        // --- Report button ---
         val reportButton = Button(this).apply {
             text = "Upload Sample PDF Report"
             setOnClickListener { uploadSampleReport() }
@@ -152,84 +160,132 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun publishWeightEvent() {
+    // --- sys/device/{deviceId}/status  (pri=0, 1Hz telemetry) ---
+    private fun publishDeviceStatus() {
         if (!isBound) { appendLog("Not bound!"); return }
+
+        val ts = System.currentTimeMillis()
+        val volDelivered = 100.0 + Math.random() * 400
+        val flowRate = 50.0 + Math.random() * 100
+        val batteryPct = 40 + (Math.random() * 60).toInt()
+        val pressureMmhg = 10.0 + Math.random() * 20
+        val tempC = 36.0 + Math.random() * 2.5
+
+        val json = """{"state":"FEEDING","sub_state":"DELIVERING","uptime_sec":${(ts / 1000) % 86400},"battery":{"percent":$batteryPct,"is_mains":true,"voltage_mv":${11800 + (Math.random() * 1000).toInt()},"charging":true},"pump":{"vol_delivered_ml":${"%.1f".format(volDelivered)},"flow_rate_ml_hr":${"%.1f".format(flowRate)},"target_vol_ml":500.0,"is_prime":false,"motor_rpm":12},"sensors":{"ft_connected":true,"ft_type":"NGT-12FR","pressure_mmhg":${"%.1f".format(pressureMmhg)},"temperature_c":${"%.1f".format(tempC)},"impedance":{"z1":1245.3,"z2":1102.7,"z3":1389.1,"s1":82.4,"s2":78.9}},"timestamp":$ts}"""
 
         val event = CloudEventParcel(
             id = UUID.randomUUID().toString(),
-            source = "patient-monitor",
-            type = "clinical/patient/weight",
-            time = System.currentTimeMillis(),
+            source = "pump-app",
+            type = "sys/device/$deviceId/status",
+            time = ts,
             priority = 0,
             dataContentType = "application/json",
-            dataJson = """{"value": ${65 + (Math.random() * 20).toInt()}.${(Math.random() * 10).toInt()}, "unit": "kg"}"""
+            dataJson = json
         )
         try {
             cloudService?.publishEvent(event)
-            appendLog(">>> Weight event [pri=0]: ${event.dataJson}")
+            appendLog(">>> status [pri=0] bat=$batteryPct% flow=${"%.0f".format(flowRate)}ml/h")
         } catch (e: Exception) {
             appendLog("ERROR: ${e.message}")
         }
     }
 
+    // --- sys/clinical/{patientId}/therapy/nutrition  (pri=1) ---
+    private fun publishTherapyEvent() {
+        if (!isBound) { appendLog("Not bound!"); return }
+
+        val ts = System.currentTimeMillis()
+        val json = """{"event":"SESSION_START","plan_id":"plan-${UUID.randomUUID().toString().take(8)}","settings":{"vtbd_ml":500,"basal_rate_ml_hr":125,"product_name":"Jevity 1.5 Cal","product_kcal_ml":1.5,"ramp_up_min":15,"max_rate_ml_hr":150},"patient_weight_kg":72.0,"timestamp":$ts}"""
+
+        val event = CloudEventParcel(
+            id = UUID.randomUUID().toString(),
+            source = "pump-app",
+            type = "sys/clinical/$patientId/therapy/nutrition",
+            time = ts,
+            priority = 1,
+            dataContentType = "application/json",
+            dataJson = json
+        )
+        try {
+            cloudService?.publishEvent(event)
+            appendLog(">>> therapy/nutrition SESSION_START [pri=1]")
+        } catch (e: Exception) {
+            appendLog("ERROR: ${e.message}")
+        }
+    }
+
+    // --- sys/clinical/{patientId}/safety/alarm  (pri=2) ---
     private fun publishAlarmEvent() {
         if (!isBound) { appendLog("Not bound!"); return }
 
+        val ts = System.currentTimeMillis()
+        val corrId = "corr-${UUID.randomUUID().toString().take(8)}"
+        val json = """{"event_code":"ALM_OCCLUSION","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected on feeding line","correlation_id":"$corrId","technical_context":{"pressure_mmhg":${"%.1f".format(60.0 + Math.random() * 30)},"threshold_mmhg":60.0,"motor_stall":true,"line_position":"PROXIMAL"},"timestamp":$ts}"""
+
         val event = CloudEventParcel(
             id = UUID.randomUUID().toString(),
-            source = "patient-monitor",
-            type = "clinical/alarm/occlusion",
-            time = System.currentTimeMillis(),
+            source = "pump-app",
+            type = "sys/clinical/$patientId/safety/alarm",
+            time = ts,
             priority = 2,
             dataContentType = "application/json",
-            dataJson = """{"alarm": "LINE_OCCLUSION", "severity": "CRITICAL", "channel": 1}"""
+            dataJson = json
         )
         try {
             cloudService?.publishEvent(event)
-            appendLog(">>> ALARM event [pri=2]: ${event.type}")
+            appendLog(">>> ALARM ALM_OCCLUSION [pri=2] $corrId")
         } catch (e: Exception) {
             appendLog("ERROR: ${e.message}")
         }
     }
 
+    // --- Burst: mixed realistic events ---
     private fun publishBurstEvents(count: Int) {
         if (!isBound) { appendLog("Not bound!"); return }
 
         appendLog("--- Burst: sending $count events ---")
-        val types = listOf(
-            Triple("clinical/patient/weight", 0, """{"value": %.1f, "unit": "kg"}"""),
-            Triple("clinical/patient/heart_rate", 0, """{"value": %d, "unit": "bpm"}"""),
-            Triple("clinical/patient/temperature", 0, """{"value": %.1f, "unit": "C"}"""),
-            Triple("clinical/pump/flow_rate", 0, """{"value": %.2f, "unit": "ml/h"}"""),
-            Triple("clinical/alarm/occlusion", 2, """{"alarm": "LINE_OCCLUSION", "severity": "CRITICAL"}"""),
-        )
-
         for (i in 1..count) {
-            val (type, basePri, template) = types[i % types.size]
-            val json = when {
-                template.contains("%.1f") && template.contains("kg") ->
-                    String.format(template, 60.0 + Math.random() * 30)
-                template.contains("%d") ->
-                    String.format(template, (60 + (Math.random() * 40).toInt()))
-                template.contains("%.1f") && template.contains("C") ->
-                    String.format(template, 36.0 + Math.random() * 2.5)
-                template.contains("%.2f") ->
-                    String.format(template, 10.0 + Math.random() * 90)
-                else -> template
+            val ts = System.currentTimeMillis()
+            val event = when (i % 5) {
+                // Device status (most frequent)
+                0, 1, 2 -> {
+                    val bp = 40 + (Math.random() * 60).toInt()
+                    val fr = 50.0 + Math.random() * 100
+                    CloudEventParcel(
+                        id = UUID.randomUUID().toString(),
+                        source = "pump-app",
+                        type = "sys/device/$deviceId/status",
+                        time = ts,
+                        priority = 0,
+                        dataContentType = "application/json",
+                        dataJson = """{"state":"FEEDING","sub_state":"DELIVERING","uptime_sec":${(ts / 1000) % 86400},"battery":{"percent":$bp,"is_mains":true,"voltage_mv":12100,"charging":true},"pump":{"vol_delivered_ml":${"%.1f".format(100 + Math.random() * 400)},"flow_rate_ml_hr":${"%.1f".format(fr)},"target_vol_ml":500.0,"is_prime":false,"motor_rpm":12},"sensors":{"ft_connected":true,"ft_type":"NGT-12FR","pressure_mmhg":${"%.1f".format(10 + Math.random() * 20)},"temperature_c":${"%.1f".format(36 + Math.random() * 2.5)}},"timestamp":$ts}"""
+                    )
+                }
+                // Therapy event
+                3 -> CloudEventParcel(
+                    id = UUID.randomUUID().toString(),
+                    source = "pump-app",
+                    type = "sys/clinical/$patientId/therapy/nutrition",
+                    time = ts,
+                    priority = 1,
+                    dataContentType = "application/json",
+                    dataJson = """{"event":"SESSION_START","plan_id":"plan-${UUID.randomUUID().toString().take(8)}","settings":{"vtbd_ml":500,"basal_rate_ml_hr":125,"product_name":"Jevity 1.5 Cal","product_kcal_ml":1.5,"ramp_up_min":15,"max_rate_ml_hr":150},"patient_weight_kg":72.0,"timestamp":$ts}"""
+                )
+                // Alarm
+                else -> CloudEventParcel(
+                    id = UUID.randomUUID().toString(),
+                    source = "pump-app",
+                    type = "sys/clinical/$patientId/safety/alarm",
+                    time = ts,
+                    priority = 2,
+                    dataContentType = "application/json",
+                    dataJson = """{"event_code":"ALM_OCCLUSION","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected","correlation_id":"corr-${UUID.randomUUID().toString().take(8)}","technical_context":{"pressure_mmhg":82.1,"threshold_mmhg":60.0,"motor_stall":true,"line_position":"PROXIMAL"},"timestamp":$ts}"""
+                )
             }
-            val event = CloudEventParcel(
-                id = UUID.randomUUID().toString(),
-                source = "patient-monitor",
-                type = type,
-                time = System.currentTimeMillis(),
-                priority = basePri,
-                dataContentType = "application/json",
-                dataJson = json
-            )
             try {
                 eventCounter++
                 cloudService?.publishEvent(event)
-                appendLog("  #$eventCounter $type [pri=$basePri]")
+                appendLog("  #$eventCounter ${event.type} [pri=${event.priority}]")
             } catch (e: Exception) {
                 appendLog("  ERROR #$eventCounter: ${e.message}")
             }
@@ -241,17 +297,15 @@ class MainActivity : AppCompatActivity() {
         if (!isBound) { appendLog("Not bound!"); return }
 
         try {
-            // Generate a small dummy PDF (valid PDF header + minimal content)
             val reportId = UUID.randomUUID().toString()
             val testFile = File(filesDir, "test_report_$reportId.pdf")
-            val pdfContent = buildDummyPdf()
-            testFile.writeBytes(pdfContent)
+            testFile.writeBytes(buildDummyPdf())
 
             val pfd = ParcelFileDescriptor.open(testFile, ParcelFileDescriptor.MODE_READ_ONLY)
             val metadata = ReportMetadata(
                 reportId = reportId,
-                deviceSerial = "client-test",
-                patientId = "patient-001",
+                deviceSerial = deviceId,
+                patientId = patientId,
                 reportType = "DAILY_SUMMARY",
                 reportDate = java.time.LocalDate.now().toString(),
                 generatedAt = System.currentTimeMillis(),
@@ -260,9 +314,7 @@ class MainActivity : AppCompatActivity() {
             )
 
             cloudService?.uploadReport(metadata, pfd)
-            appendLog(">>> Report upload requested: $reportId (${testFile.length()} bytes)")
-
-            // Clean up local copy (DCC already read it via PFD)
+            appendLog(">>> Report upload: $reportId (${testFile.length()} bytes)")
             testFile.delete()
         } catch (e: Exception) {
             appendLog("ERROR uploading report: ${e.message}")
@@ -271,7 +323,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildDummyPdf(): ByteArray {
-        // Minimal valid PDF with one page containing text
         val content = """
             %PDF-1.4
             1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
