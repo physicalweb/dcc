@@ -22,7 +22,7 @@ The project is structured as a multi-module Android application to ensure a clea
     This is a standard Android application with a simple UI that demonstrates how to consume the DCC service. It shows how to:
     1.  Bind to the external `ConnectivityService` using an `Intent`.
     2.  Receive an `IBinder` object and cast it to the `ICloudConnectService` AIDL interface.
-    3.  Call methods on the service to publish events (e.g., "Publish Patient Weight").
+    3.  Call methods on the service to publish events (device status, therapy, alarms) and upload PDF reports.
     4.  Implement a listener (`ICloudEventListener`) to receive callbacks from the service when a command is received from the cloud.
 
 *   ### `:shared-api` (Shared Interface Library)
@@ -39,6 +39,8 @@ The project is structured as a multi-module Android application to ensure a clea
 *   **Persistent Event Queue (Room):** Events survive service restarts; only deleted after MQTT delivery acknowledgment.
 *   **Priority-Based Queue:** High-priority events (alarms) drain first; low-priority (telemetry) processed between priority checks.
 *   **Network Recovery:** Auto-flushes queue on network restoration and MQTT reconnect via `ConnectivityManager.NetworkCallback`.
+*   **PDF Report Upload:** Client apps send reports via `ParcelFileDescriptor`; the service uploads to S3 and publishes MQTT metadata.
+*   **Publish Timeout:** MQTT publishes time out after 15 seconds to prevent hung callbacks from blocking the queue.
 
 ## Security Model
 
@@ -86,9 +88,12 @@ Any client app wishing to connect must still request this permission in its own 
 Create `local.properties` in the project root with your cloud credentials:
 
 ```properties
-AWS_IOT_ENDPOINT=<your-endpoint>
-COGNITO_POOL_ID=<your-pool-id>
+AWS_IOT_ENDPOINT=<your-iot-endpoint>
+COGNITO_POOL_ID=<your-cognito-identity-pool-id>
+S3_REPORTS_BUCKET=<your-s3-reports-bucket>
 ```
+
+> **Important:** These must point to the same AWS account where the cloud infrastructure (IoT Rules, Firehose, dashboard) is deployed. Using credentials from a different account will result in events not reaching the data pipeline.
 
 ### 2. Build the Project
 
@@ -108,12 +113,13 @@ You must install both applications on the same device or emulator.
 2.  **Install and Run the Client App:** Install and run the `:client` module from Android Studio.
 3.  **Using the Client:**
     *   Click the **"Bind to DCC Service"** button. The service will start (you will see a persistent notification), and the status text will change to "Connected".
-    *   Click the **"Publish 'Patient Weight' Event"** button to send an event through the service to the cloud.
+    *   Use the buttons to send device status, therapy events, safety alarms, burst events, or upload a sample PDF report.
 
 ## MQTT Topics
 
-*   **Uplink (publish):** `pump-fleet/{device-serial}/{event-type}` (routed via Basic Ingest — see cloud docs)
+*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/sys/...` (Basic Ingest prefix bypasses broker, routes directly to IoT Rule)
 *   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#`
+*   **Event types:** `sys/device/{deviceId}/status`, `sys/clinical/{patientId}/therapy/nutrition`, `sys/clinical/{patientId}/safety/alarm`, `sys/device/{deviceSerial}/report`
 
 The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`).
 

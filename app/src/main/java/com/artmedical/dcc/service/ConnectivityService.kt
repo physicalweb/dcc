@@ -262,11 +262,18 @@ class ConnectivityService : Service() {
     }
 
     private fun processQueue() {
-        if (!::mqttManager.isInitialized) return // MQTT not ready yet
-        if (isProcessing.getAndSet(true)) return // Prevent concurrent processing
+        if (!::mqttManager.isInitialized) {
+            Log.d(tag, "processQueue: skipped (mqtt not initialized)")
+            return
+        }
+        if (isProcessing.getAndSet(true)) {
+            Log.d(tag, "processQueue: skipped (already processing)")
+            return
+        }
 
         serviceScope.launch {
             try {
+                Log.d(tag, "processQueue: started")
                 while (isActive) {
                     // 1. Fast Lane: Drain all high priority events first
                     var highPriEvent = database.eventDao().getNextHighPriorityEvent()
@@ -300,13 +307,14 @@ class ConnectivityService : Service() {
                 Log.e(tag, "Error in processing loop", e)
             } finally {
                 isProcessing.set(false)
+                Log.d(tag, "processQueue: finished")
             }
         }
     }
 
     /**
      * Uploads an event and waits for the MQTT callback before returning result. Deletes the event
-     * from DB only on success.
+     * from DB only on success. Times out after 15s to prevent hanging the queue forever.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun uploadEventSafely(event: EventEntity): Boolean {
@@ -320,37 +328,43 @@ class ConnectivityService : Service() {
                     else -> AWSIotMqttQos.QOS0
                 }
 
-        return suspendCancellableCoroutine { continuation ->
-            try {
-                mqttManager.publishString(
-                        event.dataJson,
-                        topic,
-                        qos,
-                        { status, _ ->
-                            if (continuation.isActive) {
-                                val isSuccess =
-                                        status ==
-                                                AWSIotMqttMessageDeliveryCallback
-                                                        .MessageDeliveryStatus.Success
-                                if (isSuccess) {
-                                    Log.d(tag, "Uploaded: $topic")
-                                    // Clean up DB *only* after confirmed success
-                                    serviceScope.launch { database.eventDao().delete(event) }
-                                } else {
-                                    Log.w(tag, "Delivery failed: $status")
+        val result = withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
+            suspendCancellableCoroutine { continuation ->
+                try {
+                    mqttManager.publishString(
+                            event.dataJson,
+                            topic,
+                            qos,
+                            { status, _ ->
+                                if (continuation.isActive) {
+                                    val isSuccess =
+                                            status ==
+                                                    AWSIotMqttMessageDeliveryCallback
+                                                            .MessageDeliveryStatus.Success
+                                    if (isSuccess) {
+                                        Log.d(tag, "Uploaded: $topic")
+                                        serviceScope.launch { database.eventDao().delete(event) }
+                                    } else {
+                                        Log.w(tag, "Delivery failed: $status")
+                                    }
+                                    continuation.resume(isSuccess, null)
                                 }
-                                continuation.resume(isSuccess, null)
-                            }
-                        },
-                        null
-                )
-            } catch (e: Exception) {
-                Log.e(tag, "Exception during publish", e)
-                if (continuation.isActive) {
-                    continuation.resume(false, null)
+                            },
+                            null
+                    )
+                } catch (e: Exception) {
+                    Log.e(tag, "Exception during publish", e)
+                    if (continuation.isActive) {
+                        continuation.resume(false, null)
+                    }
                 }
             }
         }
+
+        if (result == null) {
+            Log.w(tag, "Publish timed out: $topic")
+        }
+        return result ?: false
     }
 
     private fun processReportQueue() {
@@ -438,6 +452,7 @@ class ConnectivityService : Service() {
 
     companion object {
         private const val MAX_REPORT_RETRIES = 3
+        private const val PUBLISH_TIMEOUT_MS = 15_000L
     }
 
     override fun onDestroy() {
