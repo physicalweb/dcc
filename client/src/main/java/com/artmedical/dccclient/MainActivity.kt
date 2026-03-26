@@ -83,6 +83,15 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(statusText)
 
+        val deviceInfoText = TextView(this).apply {
+            text = "Device: $deviceId | Patient: $patientId\nTopics: sys/device/$deviceId/status, sys/clinical/$patientId/..."
+            textSize = 11f
+            setTypeface(Typeface.MONOSPACE)
+            setTextColor(Color.GRAY)
+            setPadding(0, 8, 0, 12)
+        }
+        layout.addView(deviceInfoText)
+
         val bindButton = Button(this).apply {
             text = "Bind to DCC Service"
             setOnClickListener { bindToService() }

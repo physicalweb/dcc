@@ -262,6 +262,7 @@ class ConnectivityService : Service() {
     }
 
     private fun processQueue() {
+        if (!::mqttManager.isInitialized) return // MQTT not ready yet
         if (isProcessing.getAndSet(true)) return // Prevent concurrent processing
 
         serviceScope.launch {
@@ -353,6 +354,7 @@ class ConnectivityService : Service() {
     }
 
     private fun processReportQueue() {
+        if (!::mqttManager.isInitialized) return // MQTT not ready yet
         if (isProcessingReports.getAndSet(true)) return
 
         serviceScope.launch {
