@@ -5,35 +5,35 @@
 The DCC (Decoupled Connectivity Component) is a headless Android service that provides cloud connectivity to other applications on the same device. Client apps (e.g. `medical.apk`) bind to the DCC via AIDL IPC to publish telemetry events and upload PDF reports without bundling any networking or cloud logic.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     Android Device                        │
-│                                                           │
-│  ┌────────────┐   AIDL IPC    ┌────────────────────────┐ │
-│  │ medical.apk│──────────────>│   DCC ConnectivityService│ │
-│  │            │ CloudEventParcel│                        │ │
-│  │            │<──────────────│  ┌──────┐  ┌─────────┐ │ │
-│  │            │ ICloudEventListener│ Room │  │ MQTT    │ │ │
-│  └────────────┘               │  │  DB  │  │ Manager │ │ │
-│                               │  └──┬───┘  └────┬────┘ │ │
-│                               │     │           │       │ │
-│                               │  ┌──┴───────────┴────┐  │ │
-│                               │  │  Priority Queue    │  │ │
-│                               │  │  Processor         │  │ │
-│                               │  └────────┬───────────┘  │ │
-│                               │           │              │ │
-│                               │  ┌────────┴───────────┐  │ │
-│                               │  │ Report Upload Mgr  │  │ │
-│                               │  │ (S3 TransferUtility)│  │ │
-│                               │  └────────────────────┘  │ │
-│                               └───────────┬──────────────┘ │
+┌────────────────────────────────────────────────────────────┐
+│                      Android Device                        │
+│                                                            │
+│  ┌────────────┐             ┌───────────────────────────┐  │
+│  │            │  AIDL IPC   │  DCC ConnectivityService  │  │
+│  │ medical.apk│────────────>│                           │  │
+│  │            │  events     │  ┌────────┐ ┌──────────┐  │  │
+│  │            │<────────────│  │ Room   │ │  MQTT    │  │  │
+│  │            │  commands   │  │  DB    │ │ Manager  │  │  │
+│  └────────────┘             │  └───┬────┘ └────┬─────┘  │  │
+│                             │      │           │        │  │
+│                             │  ┌───┴───────────┴─────┐  │  │
+│                             │  │ Priority Queue      │  │  │
+│                             │  │ Processor           │  │  │
+│                             │  └──────────┬──────────┘  │  │
+│                             │             │             │  │
+│                             │  ┌──────────┴──────────┐  │  │
+│                             │  │ Report Upload Mgr   │  │  │
+│                             │  │ (S3 TransferUtility)│  │  │
+│                             │  └─────────────────────┘  │  │
+│                             └─────────────┬─────────────┘  │
 │                                           │                │
 └───────────────────────────────────────────┼────────────────┘
                                             │ MQTT / HTTPS
                                             ▼
-                                   ┌─────────────────┐
-                                   │  AWS IoT Core    │
-                                   │  (Basic Ingest)  │
-                                   └────────┬────────┘
+                                  ┌───────────────────┐
+                                  │   AWS IoT Core    │
+                                  │  (Basic Ingest)   │
+                                  └─────────┬─────────┘
                                             │
                               ┌─────────────┼─────────────┐
                               ▼             ▼             ▼
