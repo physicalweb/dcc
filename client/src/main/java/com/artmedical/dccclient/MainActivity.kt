@@ -15,6 +15,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.artmedical.cloud.api.CloudEventParcel
+import com.artmedical.cloud.api.CloudEventPublisher
 import com.artmedical.cloud.api.ICloudConnectService
 import com.artmedical.cloud.api.ICloudEventListener
 import com.artmedical.cloud.api.ReportMetadata
@@ -25,11 +26,8 @@ class MainActivity : AppCompatActivity() {
 
     private val tag = "DCC-Client"
 
-    // Simulated device/patient identifiers (matches simulator convention)
-    private val deviceId = "dev001"
-    private val patientId = "pat001"
-
     private var cloudService: ICloudConnectService? = null
+    private var publisher: CloudEventPublisher? = null
     private var isBound = false
     private var eventCounter = 0
 
@@ -48,6 +46,7 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.i(tag, "Service connected")
             cloudService = ICloudConnectService.Stub.asInterface(service)
+            publisher = CloudEventPublisher(cloudService!!)
             isBound = true
             runOnUiThread { statusText.text = "Status: Connected" }
             appendLog("Bound to DCC service")
@@ -62,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.w(tag, "Service disconnected")
             cloudService = null
+            publisher = null
             isBound = false
             runOnUiThread { statusText.text = "Status: Disconnected" }
             appendLog("Disconnected from DCC service")
@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(statusText)
 
         val deviceInfoText = TextView(this).apply {
-            text = "Device: $deviceId | Patient: $patientId\nTopics: sys/device/$deviceId/status, sys/clinical/$patientId/..."
+            text = "ICD-aligned topics: system/metadata, pump/status, tube/status, ..."
             textSize = 11f
             setTypeface(Typeface.MONOSPACE)
             setTextColor(Color.GRAY)
@@ -99,22 +99,34 @@ class MainActivity : AppCompatActivity() {
         layout.addView(bindButton)
 
         val statusButton = Button(this).apply {
-            text = "Send Device Status"
-            setOnClickListener { publishDeviceStatus() }
+            text = "Send System Metadata"
+            setOnClickListener { publishSystemMetadata() }
         }
         layout.addView(statusButton)
 
-        val therapyButton = Button(this).apply {
-            text = "Send Therapy Event"
-            setOnClickListener { publishTherapyEvent() }
+        val pumpButton = Button(this).apply {
+            text = "Send Pump Status + Dose"
+            setOnClickListener { publishPumpStatus(); publishPumpDose() }
         }
-        layout.addView(therapyButton)
+        layout.addView(pumpButton)
 
-        val alarmButton = Button(this).apply {
-            text = "Send Safety Alarm"
-            setOnClickListener { publishAlarmEvent() }
+        val tubeButton = Button(this).apply {
+            text = "Send Tube Status"
+            setOnClickListener { publishTubeStatus() }
         }
-        layout.addView(alarmButton)
+        layout.addView(tubeButton)
+
+        val planButton = Button(this).apply {
+            text = "Send Plan Settings + Status"
+            setOnClickListener { publishPlanSettings(); publishPlanStatus() }
+        }
+        layout.addView(planButton)
+
+        val clinicalButton = Button(this).apply {
+            text = "Send Clinical Event (Alarm)"
+            setOnClickListener { publishClinicalEvent() }
+        }
+        layout.addView(clinicalButton)
 
         val burstButton = Button(this).apply {
             text = "Burst: 10 Mixed Events"
@@ -169,132 +181,145 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- sys/device/{deviceId}/status  (pri=0, 1Hz telemetry) ---
-    private fun publishDeviceStatus() {
-        if (!isBound) { appendLog("Not bound!"); return }
+    // ── system/metadata (1-5s, QoS 0) ───────────────────────────
 
+    private fun publishSystemMetadata() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
+        val ts = System.currentTimeMillis()
+        val batteryPct = 40 + (Math.random() * 60).toInt()
+
+        val json = """{"system_state":"SYSTEM_COLLECTING_DATA","battery_pct":$batteryPct,"cpu_temp_c":${45 + (Math.random() * 15).toInt()},"mains_connected":true,"os_uptime_sec":${(ts / 1000) % 86400},"gui_alive_counter":${eventCounter++},"network_speed_kbps":${500 + (Math.random() * 1500).toInt()},"timestamp":$ts}"""
+
+        try {
+            p.sendSystemMetadata(json)
+            appendLog(">>> system/metadata bat=$batteryPct% state=COLLECTING_DATA")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
+    }
+
+    // ── pump/status (1s, QoS 0) ──────────────────────────────────
+
+    private fun publishPumpStatus() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
+        val ts = System.currentTimeMillis()
+        val flowRate = 50.0 + Math.random() * 100
+
+        val json = """{"dose_program_state":"NUTRIENTS_DOSE_RELEASE","motor_state":"RUNNING","instant_rate_ml_hr":${"%.1f".format(flowRate)},"nutrients_source_state":"DETECTED","fluids_source_state":"DETECTED","nutrients_prime_state":"PRIMED","fluids_prime_state":"PRIMED","nutrients_fluids_ratio":80,"timestamp":$ts}"""
+
+        try {
+            p.sendPumpStatus(json)
+            appendLog(">>> pump/status dose=NUTRIENTS flow=${"%.0f".format(flowRate)}ml/h")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
+    }
+
+    // ── pump/dose (1s while feeding, QoS 0) ──────────────────────
+
+    private fun publishPumpDose() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
         val ts = System.currentTimeMillis()
         val volDelivered = 100.0 + Math.random() * 400
-        val flowRate = 50.0 + Math.random() * 100
-        val batteryPct = 40 + (Math.random() * 60).toInt()
-        val pressureMmhg = 10.0 + Math.random() * 20
-        val tempC = 36.0 + Math.random() * 2.5
 
-        val json = """{"state":"FEEDING","sub_state":"DELIVERING","uptime_sec":${(ts / 1000) % 86400},"battery":{"percent":$batteryPct,"is_mains":true,"voltage_mv":${11800 + (Math.random() * 1000).toInt()},"charging":true},"pump":{"vol_delivered_ml":${"%.1f".format(volDelivered)},"flow_rate_ml_hr":${"%.1f".format(flowRate)},"target_vol_ml":500.0,"is_prime":false,"motor_rpm":12},"sensors":{"ft_connected":true,"ft_type":"NGT-12FR","pressure_mmhg":${"%.1f".format(pressureMmhg)},"temperature_c":${"%.1f".format(tempC)},"impedance":{"z1":1245.3,"z2":1102.7,"z3":1389.1,"s1":82.4,"s2":78.9}},"timestamp":$ts}"""
+        val json = """{"domain":"NUTRIENTS","instant_rate_ml_hr":${"%.1f".format(50 + Math.random() * 100)},"cumulative_volume_ml":${"%.1f".format(volDelivered)},"dose_rel_current_ma":${120 + (Math.random() * 30).toInt()},"timestamp":$ts}"""
 
-        val event = CloudEventParcel(
-            id = UUID.randomUUID().toString(),
-            source = "pump-app",
-            type = "sys/device/$deviceId/status",
-            time = ts,
-            priority = 0,
-            dataContentType = "application/json",
-            dataJson = json
-        )
         try {
-            cloudService?.publishEvent(event)
-            appendLog(">>> status [pri=0] bat=$batteryPct% flow=${"%.0f".format(flowRate)}ml/h")
-        } catch (e: Exception) {
-            appendLog("ERROR: ${e.message}")
-        }
+            p.sendPumpDose(json)
+            appendLog(">>> pump/dose vol=${"%.0f".format(volDelivered)}mL")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
     }
 
-    // --- sys/clinical/{patientId}/therapy/nutrition  (pri=1) ---
-    private fun publishTherapyEvent() {
-        if (!isBound) { appendLog("Not bound!"); return }
+    // ── tube/status (1s, QoS 0) ──────────────────────────────────
 
+    private fun publishTubeStatus() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
         val ts = System.currentTimeMillis()
-        val json = """{"event":"SESSION_START","plan_id":"plan-${UUID.randomUUID().toString().take(8)}","settings":{"vtbd_ml":500,"basal_rate_ml_hr":125,"product_name":"Jevity 1.5 Cal","product_kcal_ml":1.5,"ramp_up_min":15,"max_rate_ml_hr":150},"patient_weight_kg":72.0,"timestamp":$ts}"""
+        val states = arrayOf("FT_IN_POSITION", "FT_READY_FOR_FEEDING", "FT_IN_STOMACH", "FT_MINOR_REFLUX")
+        val state = states[(Math.random() * states.size).toInt()]
 
-        val event = CloudEventParcel(
-            id = UUID.randomUUID().toString(),
-            source = "pump-app",
-            type = "sys/clinical/$patientId/therapy/nutrition",
-            time = ts,
-            priority = 1,
-            dataContentType = "application/json",
-            dataJson = json
-        )
+        val json = """{"ft_state":"$state","ft_type":"NGT-14FR","impedance":{"z1":1245.3,"z2":1102.7,"z3":1389.1,"z4":980.5,"z5":1150.2,"z6":1320.8,"s1":82.4,"s2":78.9,"s3":85.1},"imp_sensor_state":"IMP_SENSOR_SWEEP","timestamp":$ts}"""
+
         try {
-            cloudService?.publishEvent(event)
-            appendLog(">>> therapy/nutrition SESSION_START [pri=1]")
-        } catch (e: Exception) {
-            appendLog("ERROR: ${e.message}")
-        }
+            p.sendTubeStatus(json)
+            appendLog(">>> tube/status ft_state=$state")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
     }
 
-    // --- sys/clinical/{patientId}/safety/alarm  (pri=2) ---
-    private fun publishAlarmEvent() {
-        if (!isBound) { appendLog("Not bound!"); return }
+    // ── plan/settings (on-change, QoS 1) ─────────────────────────
 
+    private fun publishPlanSettings() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
+        val ts = System.currentTimeMillis()
+
+        val json = """{"nutrition":{"plan_start_timestamp":$ts,"basal_rate_ml_hr":125,"max_rate_ml_hr":150,"vtbd_ml":500,"deliver_over_hr":8,"volume_offset_ml":0},"fluid":{"plan_start_timestamp":$ts,"basal_rate_ml_hr":50,"max_rate_ml_hr":75,"vtbd_ml":200,"deliver_over_hr":8},"timestamp":$ts}"""
+
+        try {
+            p.sendPlanSettings(json)
+            appendLog(">>> plan/settings nut=500mL@125ml/h flu=200mL@50ml/h")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
+    }
+
+    // ── plan/status (1-5s, QoS 0) ────────────────────────────────
+
+    private fun publishPlanStatus() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
+        val ts = System.currentTimeMillis()
+        val efficiency = 70 + (Math.random() * 30).toInt()
+        val delivered = 100.0 + Math.random() * 300
+        val expected = delivered + Math.random() * 100
+
+        val json = """{"nutrition":{"plan_duration_sec":${3600 + (Math.random() * 7200).toInt()},"plan_delivered_volume_ml":${"%.1f".format(delivered)},"plan_expected_volume_ml":${"%.0f".format(expected)},"plan_net_volume_ml":${"%.1f".format(delivered * 0.95)},"plan_efficiency_pct":$efficiency,"plan_grv_volume_ml":${(Math.random() * 50).toInt()}},"fluid":{"plan_delivered_volume_ml":${"%.1f".format(delivered * 0.3)},"plan_expected_volume_ml":${"%.0f".format(expected * 0.3)},"plan_net_volume_ml":${"%.1f".format(delivered * 0.28)},"plan_efficiency_pct":${efficiency + 5}},"timestamp":$ts}"""
+
+        try {
+            p.sendPlanStatus(json)
+            appendLog(">>> plan/status nut_eff=${efficiency}% del=${"%.0f".format(delivered)}mL")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
+    }
+
+    // ── events/clinical (on-event, QoS 1) ────────────────────────
+
+    private fun publishClinicalEvent() {
+        val p = publisher ?: run { appendLog("Not bound!"); return }
         val ts = System.currentTimeMillis()
         val corrId = "corr-${UUID.randomUUID().toString().take(8)}"
-        val json = """{"event_code":"ALM_OCCLUSION","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected on feeding line","correlation_id":"$corrId","technical_context":{"pressure_mmhg":${"%.1f".format(60.0 + Math.random() * 30)},"threshold_mmhg":60.0,"motor_stall":true,"line_position":"PROXIMAL"},"timestamp":$ts}"""
 
-        val event = CloudEventParcel(
-            id = UUID.randomUUID().toString(),
-            source = "pump-app",
-            type = "sys/clinical/$patientId/safety/alarm",
-            time = ts,
-            priority = 2,
-            dataContentType = "application/json",
-            dataJson = json
-        )
+        val json = """{"event_type":"ALM_OCCLUSION","record_type":"ALERT","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected on feeding line","correlation_id":"$corrId","start_time":$ts,"states":{"reason":"PRESSURE_EXCEEDED"},"context":{"pressure_mmhg":${"%.1f".format(60.0 + Math.random() * 30)},"threshold_mmhg":60.0,"motor_stall":true},"timestamp":$ts}"""
+
         try {
-            cloudService?.publishEvent(event)
-            appendLog(">>> ALARM ALM_OCCLUSION [pri=2] $corrId")
-        } catch (e: Exception) {
-            appendLog("ERROR: ${e.message}")
-        }
+            p.sendClinicalEvent(json)
+            appendLog(">>> events/clinical ALM_OCCLUSION RAISED $corrId")
+        } catch (e: Exception) { appendLog("ERROR: ${e.message}") }
     }
 
-    // --- Burst: mixed realistic events ---
+    // ── Burst: mixed ICD-aligned events ──────────────────────────
+
     private fun publishBurstEvents(count: Int) {
-        if (!isBound) { appendLog("Not bound!"); return }
+        val p = publisher ?: run { appendLog("Not bound!"); return }
 
         appendLog("--- Burst: sending $count events ---")
         for (i in 1..count) {
             val ts = System.currentTimeMillis()
-            val event = when (i % 5) {
-                // Device status (most frequent)
-                0, 1, 2 -> {
-                    val bp = 40 + (Math.random() * 60).toInt()
-                    val fr = 50.0 + Math.random() * 100
-                    CloudEventParcel(
-                        id = UUID.randomUUID().toString(),
-                        source = "pump-app",
-                        type = "sys/device/$deviceId/status",
-                        time = ts,
-                        priority = 0,
-                        dataContentType = "application/json",
-                        dataJson = """{"state":"FEEDING","sub_state":"DELIVERING","uptime_sec":${(ts / 1000) % 86400},"battery":{"percent":$bp,"is_mains":true,"voltage_mv":12100,"charging":true},"pump":{"vol_delivered_ml":${"%.1f".format(100 + Math.random() * 400)},"flow_rate_ml_hr":${"%.1f".format(fr)},"target_vol_ml":500.0,"is_prime":false,"motor_rpm":12},"sensors":{"ft_connected":true,"ft_type":"NGT-12FR","pressure_mmhg":${"%.1f".format(10 + Math.random() * 20)},"temperature_c":${"%.1f".format(36 + Math.random() * 2.5)}},"timestamp":$ts}"""
-                    )
-                }
-                // Therapy event
-                3 -> CloudEventParcel(
-                    id = UUID.randomUUID().toString(),
-                    source = "pump-app",
-                    type = "sys/clinical/$patientId/therapy/nutrition",
-                    time = ts,
-                    priority = 1,
-                    dataContentType = "application/json",
-                    dataJson = """{"event":"SESSION_START","plan_id":"plan-${UUID.randomUUID().toString().take(8)}","settings":{"vtbd_ml":500,"basal_rate_ml_hr":125,"product_name":"Jevity 1.5 Cal","product_kcal_ml":1.5,"ramp_up_min":15,"max_rate_ml_hr":150},"patient_weight_kg":72.0,"timestamp":$ts}"""
-                )
-                // Alarm
-                else -> CloudEventParcel(
-                    id = UUID.randomUUID().toString(),
-                    source = "pump-app",
-                    type = "sys/clinical/$patientId/safety/alarm",
-                    time = ts,
-                    priority = 2,
-                    dataContentType = "application/json",
-                    dataJson = """{"event_code":"ALM_OCCLUSION","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected","correlation_id":"corr-${UUID.randomUUID().toString().take(8)}","technical_context":{"pressure_mmhg":82.1,"threshold_mmhg":60.0,"motor_stall":true,"line_position":"PROXIMAL"},"timestamp":$ts}"""
-                )
-            }
             try {
                 eventCounter++
-                cloudService?.publishEvent(event)
-                appendLog("  #$eventCounter ${event.type} [pri=${event.priority}]")
+                when (i % 6) {
+                    0, 1 -> {
+                        p.sendSystemMetadata("""{"system_state":"SYSTEM_COLLECTING_DATA","battery_pct":${40 + (Math.random() * 60).toInt()},"cpu_temp_c":${48 + (Math.random() * 10).toInt()},"mains_connected":true,"os_uptime_sec":${(ts / 1000) % 86400},"timestamp":$ts}""")
+                        appendLog("  #$eventCounter system/metadata [pri=0]")
+                    }
+                    2 -> {
+                        p.sendPumpDose("""{"domain":"NUTRIENTS","instant_rate_ml_hr":${"%.1f".format(50 + Math.random() * 100)},"cumulative_volume_ml":${"%.1f".format(100 + Math.random() * 400)},"timestamp":$ts}""")
+                        appendLog("  #$eventCounter pump/dose [pri=0]")
+                    }
+                    3 -> {
+                        p.sendTubeStatus("""{"ft_state":"FT_IN_POSITION","ft_type":"NGT-14FR","impedance":{"z1":1245.3,"z2":1102.7,"z3":1389.1},"timestamp":$ts}""")
+                        appendLog("  #$eventCounter tube/status [pri=0]")
+                    }
+                    4 -> {
+                        p.sendPlanStatus("""{"nutrition":{"plan_delivered_volume_ml":${"%.1f".format(100 + Math.random() * 300)},"plan_expected_volume_ml":350,"plan_efficiency_pct":${70 + (Math.random() * 30).toInt()}},"timestamp":$ts}""")
+                        appendLog("  #$eventCounter plan/status [pri=0]")
+                    }
+                    5 -> {
+                        p.sendClinicalEvent("""{"event_type":"ALM_OCCLUSION","record_type":"ALERT","lifecycle":"RAISED","severity":"CRITICAL","message":"Occlusion detected","correlation_id":"corr-${UUID.randomUUID().toString().take(8)}","start_time":$ts,"timestamp":$ts}""")
+                        appendLog("  #$eventCounter events/clinical [pri=1]")
+                    }
+                }
             } catch (e: Exception) {
                 appendLog("  ERROR #$eventCounter: ${e.message}")
             }
@@ -313,8 +338,8 @@ class MainActivity : AppCompatActivity() {
             val pfd = ParcelFileDescriptor.open(testFile, ParcelFileDescriptor.MODE_READ_ONLY)
             val metadata = ReportMetadata(
                 reportId = reportId,
-                deviceSerial = deviceId,
-                patientId = patientId,
+                deviceSerial = "test-device",
+                patientId = "test-patient",
                 reportType = "DAILY_SUMMARY",
                 reportDate = java.time.LocalDate.now().toString(),
                 generatedAt = System.currentTimeMillis(),

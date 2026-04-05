@@ -153,16 +153,12 @@ class ConnectivityService : Service() {
         super.onCreate()
         startForeground(NOTIFICATION_ID, createNotification())
 
-        // Resolve stable device serial (generate-once, persist in SharedPreferences)
-        val prefs = getSharedPreferences("dcc_device_prefs", Context.MODE_PRIVATE)
-        var serial = prefs.getString("device_serial", null)
-        if (serial == null) {
-            serial = UUID.randomUUID().toString()
-            prefs.edit().putString("device_serial", serial).apply()
-            Log.i(tag, "Generated new device serial: $serial")
-        }
-        rawDeviceSerial = serial
-        DEVICE_SERIAL = "pump-fleet/$serial"
+        // Resolve device serial — priority order:
+        // 1. Manufacturing-assigned system property (production devices)
+        // 2. Build config override (lab/staging)
+        // 3. Persisted UUID fallback (development only)
+        rawDeviceSerial = resolveDeviceSerial()
+        DEVICE_SERIAL = "pump-fleet/$rawDeviceSerial"
         DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
         Log.i(tag, "Device serial: $DEVICE_SERIAL")
 
@@ -321,12 +317,8 @@ class ConnectivityService : Service() {
         // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
         val topic = "$BASIC_INGEST_PREFIX/$DEVICE_SERIAL/${event.type}"
 
-        val qos =
-                when (event.priority) {
-                    0 -> AWSIotMqttQos.QOS0
-                    1, 2 -> AWSIotMqttQos.QOS1
-                    else -> AWSIotMqttQos.QOS0
-                }
+        val qos = if (mapPriorityToQos(event.priority) == 0)
+                AWSIotMqttQos.QOS0 else AWSIotMqttQos.QOS1
 
         val result = withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
             suspendCancellableCoroutine { continuation ->
@@ -401,7 +393,7 @@ class ConnectivityService : Service() {
                     val metadataEvent = EventEntity(
                         id = UUID.randomUUID().toString(),
                         source = DEVICE_SERIAL,
-                        type = "sys/device/${report.deviceSerial}/report",
+                        type = "report/jobs",
                         time = System.currentTimeMillis(),
                         priority = 1,
                         dataContentType = "application/json",
@@ -421,10 +413,6 @@ class ConnectivityService : Service() {
                 isProcessingReports.set(false)
             }
         }
-    }
-
-    private fun buildReportMetadataJson(report: ReportEntity): String {
-        return """{"report_id":"${report.reportId}","s3_key":"${report.s3Key}","report_date":"${report.reportDate}","report_type":"${report.reportType}","size_bytes":${report.fileSizeBytes},"timestamp":${System.currentTimeMillis()}}"""
     }
 
     fun onCloudCommandReceived(topic: String, jsonPayload: String) {
@@ -450,9 +438,54 @@ class ConnectivityService : Service() {
         medicalListeners.finishBroadcast()
     }
 
+    /**
+     * Resolves the device serial number using a priority chain:
+     * 1. Manufacturing-assigned system property: ro.art.serial
+     * 2. Persisted value from SharedPreferences (dev/testing fallback)
+     *
+     * Production devices have ro.art.serial flashed during manufacturing.
+     * Until X.509 client certificates are provisioned, this is the device identity.
+     */
+    private fun resolveDeviceSerial(): String {
+        // 1. Manufacturing-assigned system property
+        try {
+            val mfgSerial = System.getProperty("ro.art.serial")
+            if (!mfgSerial.isNullOrBlank()) {
+                Log.i(tag, "Using manufacturing serial: $mfgSerial")
+                return mfgSerial
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Could not read system property ro.art.serial", e)
+        }
+
+        // 2. Persisted UUID fallback (development)
+        val prefs = getSharedPreferences("dcc_device_prefs", Context.MODE_PRIVATE)
+        var serial = prefs.getString("device_serial", null)
+        if (serial == null) {
+            serial = UUID.randomUUID().toString()
+            prefs.edit().putString("device_serial", serial).apply()
+            Log.w(tag, "No manufacturing serial found — generated dev serial: $serial")
+        } else {
+            Log.i(tag, "Using persisted dev serial: $serial")
+        }
+        return serial
+    }
+
     companion object {
         private const val MAX_REPORT_RETRIES = 3
         private const val PUBLISH_TIMEOUT_MS = 15_000L
+
+        /** Maps event priority to MQTT QoS level. */
+        fun mapPriorityToQos(priority: Int): Int = when (priority) {
+            0 -> 0    // QoS 0: fire-and-forget
+            1, 2 -> 1 // QoS 1: at-least-once
+            else -> 0
+        }
+
+        /** Builds the MQTT metadata JSON for a successfully uploaded report. */
+        fun buildReportMetadataJson(report: ReportEntity, timestamp: Long = System.currentTimeMillis()): String {
+            return """{"report_id":"${report.reportId}","s3_key":"${report.s3Key}","report_date":"${report.reportDate}","report_type":"${report.reportType}","size_bytes":${report.fileSizeBytes},"timestamp":$timestamp}"""
+        }
     }
 
     override fun onDestroy() {
