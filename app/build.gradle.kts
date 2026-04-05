@@ -26,8 +26,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        val awsIotEndpoint = localProperties.getProperty("AWS_IOT_ENDPOINT") ?: ""
-        val cognitoPoolId = localProperties.getProperty("COGNITO_POOL_ID") ?: ""
+        val awsIotEndpoint = localProperties.getProperty("AWS_IOT_ENDPOINT") ?: "aee93mkgcstsg-ats.iot.us-east-1.amazonaws.com"
+        val cognitoPoolId = localProperties.getProperty("COGNITO_POOL_ID") ?: "us-east-1:6cf5ea9f-188e-497e-9154-247c4abd71d5"
         val s3ReportsBucket = localProperties.getProperty("S3_REPORTS_BUCKET") ?: "smart-reports-372492559335-dev"
         buildConfigField("String", "AWS_IOT_ENDPOINT", "\"$awsIotEndpoint\"")
         buildConfigField("String", "COGNITO_POOL_ID", "\"$cognitoPoolId\"")
