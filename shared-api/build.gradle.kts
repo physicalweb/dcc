@@ -10,6 +10,7 @@ android {
 
     defaultConfig {
         minSdk = 24
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -32,5 +33,8 @@ android {
 }
 
 dependencies {
-    // No specific dependencies needed for the API definition
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("com.google.truth:truth:1.1.5")
 }

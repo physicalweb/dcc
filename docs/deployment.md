@@ -158,11 +158,11 @@ I DCC-Service: Connected to AWS IoT
 
 ### Check event publishing
 
-After tapping "Send Device Status" or "Burst" in the client:
+After tapping "Send System Metadata" or "Burst" in the client:
 ```
-V DCC-Service: Received Upstream: sys/device/dev001/status [Pri: 0]
+V DCC-Service: Received Upstream: system/metadata [Pri: 0]
 D DCC-Service: processQueue: started
-D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/sys/device/dev001/status
+D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/system/metadata
 D DCC-Service: processQueue: finished
 ```
 
@@ -172,15 +172,15 @@ After tapping "Upload Sample PDF Report":
 ```
 I DCC-Service: Received report upload: <uuid>
 D DCC-ReportUpload: S3 upload state: IN_PROGRESS for reports/<serial>/<date>/<uuid>.pdf
-D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/sys/device/<serial>/report
+D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/report/jobs
 ```
 
 ### Dashboard visibility
 
 The device appears in the cloud dashboard's device picker once:
-1. At least one `sys/device/{deviceId}/status` event reaches IoT Core
+1. At least one `system/metadata` event reaches IoT Core
 2. Firehose flushes to S3 (up to 60 seconds buffer)
-3. The Athena query in `getActiveDevices` finds events with `full_topic LIKE '%/status'` in the last 24 hours
+3. The Athena query in `getActiveDevices` finds events with the device serial in the last 24 hours
 
 ---
 
@@ -193,8 +193,8 @@ The device appears in the cloud dashboard's device picker once:
 | `Received Upstream` but no `Uploaded` | processQueue stuck (timeout or isProcessing deadlock) | Look for `processQueue: skipped (already processing)` or `Publish timed out`. Restart the DCC service. |
 | `Delivery failed: Fail` | MQTT publish failed (connection dropped mid-publish) | Transient — the queue retries on next trigger. Check if connection is stable. |
 | S3 `403 Access Denied` | Cognito unauth role missing `s3:PutObject` | Add `s3:PutObject` permission to the role for `arn:aws:s3:::<bucket>/reports/*`. |
-| Device not in dashboard picker | No `status` events reaching data lake | Ensure client sends `sys/device/{id}/status` events (not just therapy/alarm). Wait 60s for Firehose flush. |
-| Events reach IoT Core but not Athena | Topic doesn't match IoT Rule filter | Verify event type starts with `sys/`. The rule matches `FROM 'pump-fleet/+/sys/#'`. |
+| Device not in dashboard picker | No telemetry events reaching data lake | Ensure client sends `system/metadata` events. Wait 60s for Firehose flush. |
+| Events reach IoT Core but not Athena | Topic doesn't match IoT Rule filter | Verify topic is one of the ICD-aligned topics (e.g. `system/metadata`, `pump/status`). |
 | `UninitializedPropertyAccessException: mqttManager` | Race condition (should be fixed) | Update to latest build with `!::mqttManager.isInitialized` guard. |
 
 ---

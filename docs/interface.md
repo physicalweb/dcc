@@ -87,9 +87,9 @@ The queue processor drains all priority >= 1 events before processing any priori
 
 ---
 
-## MQTT Topic Taxonomy
+## MQTT Topic Taxonomy — ICD-Aligned
 
-All event types use the `sys/` prefix to match the cloud IoT Rule `FROM 'pump-fleet/+/sys/#'`.
+Topics follow the ICD Aggregated Telemetry API (Rev 04). Each topic maps to one subsystem at a specific cadence.
 
 The full MQTT topic on the wire is:
 ```
@@ -101,21 +101,31 @@ $aws/rules/smart_ingest/pump-fleet/{device_serial}/{event.type}
 ```
 pump-fleet/{device_serial}/
 │
-├── sys/device/{deviceId}/
-│   ├── status             ← 1Hz telemetry snapshot (pri=0)
-│   ├── power              ← Battery/mains events (pri=1)
-│   ├── fluidics           ← Motor, pressure events (pri=1)
-│   ├── consumables        ← Tube RFID, cassette (pri=0)
-│   ├── maintenance        ← Error codes, self-test (pri=1)
-│   └── report             ← PDF report upload metadata (pri=1)
+├── system/
+│   ├── metadata           ← Battery, CPU temp, uptime, network (1-5s, QoS 0)
+│   └── connection         ← UP / DOWN / DEGRADED (on change, QoS 1)
 │
-├── sys/clinical/{patientId}/
-│   ├── therapy/
-│   │   ├── nutrition      ← Feeding plan lifecycle (pri=1)
-│   │   └── fluids         ← Hydration plan events (pri=1)
-│   └── safety/
-│       ├── alarm          ← Critical safety alarms (pri=2)
-│       └── grv            ← Gastric residual volume (pri=1)
+├── pump/
+│   ├── status             ← Dose program state, motor, source states (1s, QoS 0)
+│   └── dose               ← Per-dose rate, cumulative volume (1s while feeding, QoS 0)
+│
+├── plan/
+│   ├── settings           ← VTBD, basal rate, max rate (on change, QoS 1)
+│   └── status             ← Efficiency, net/expected/delivered (1-5s, QoS 0)
+│
+├── tube/
+│   ├── status             ← 16-state feeding tube position (1s, QoS 0)
+│   └── impedance          ← 6-channel z1-z6, s1-s3 (0.5-2s, QoS 0)
+│
+├── grv/status             ← Drainage bag state, session volume (1-5s, QoS 0)
+├── ree/status             ← REE state, VCO2, breath state (5-30s, QoS 0)
+├── reflux/status          ← Hourly pre-aggregated counts/durations (per packet, QoS 0)
+│
+├── events/
+│   ├── clinical           ← 60+ clinical event types with correlation (on event, QoS 1)
+│   └── mechanical         ← Console errors, system errors (on event, QoS 1)
+│
+├── report/jobs            ← PDF upload confirmation metadata (on upload, QoS 1)
 │
 └── cmd/                   ← Downlink commands (cloud → device)
     ├── config
@@ -124,18 +134,37 @@ pump-fleet/{device_serial}/
 
 ### Event Type Summary
 
-| # | Event Type | `type` field value | Priority | Frequency |
-|---|-----------|-------------------|----------|-----------|
-| 1 | Device Status | `sys/device/{deviceId}/status` | 0 | 1Hz continuous |
-| 2 | Safety Alarm | `sys/clinical/{patientId}/safety/alarm` | 2 | Event-driven |
-| 3 | Therapy Nutrition | `sys/clinical/{patientId}/therapy/nutrition` | 1 | Event-driven |
-| 4 | Therapy Fluids | `sys/clinical/{patientId}/therapy/fluids` | 1 | Event-driven |
-| 5 | Power | `sys/device/{deviceId}/power` | 1 | Event-driven |
-| 6 | Fluidics | `sys/device/{deviceId}/fluidics` | 1 | Event-driven |
-| 7 | GRV | `sys/clinical/{patientId}/safety/grv` | 1 | Event-driven |
-| 8 | Consumables | `sys/device/{deviceId}/consumables` | 0 | Event-driven |
-| 9 | Maintenance | `sys/device/{deviceId}/maintenance` | 1 | Event-driven |
-| 10 | Report Metadata | `sys/device/{deviceId}/report` | 1 | After S3 upload |
+| # | Topic (`type` field) | Cadence | QoS | Publisher Method |
+|---|---------------------|---------|-----|-----------------|
+| 1 | `system/metadata` | 1-5s | 0 | `sendSystemMetadata` |
+| 2 | `system/connection` | On change | 1 | `sendSystemConnection` |
+| 3 | `pump/status` | 1s | 0 | `sendPumpStatus` |
+| 4 | `pump/dose` | 1s (while feeding) | 0 | `sendPumpDose` |
+| 5 | `plan/settings` | On change | 1 | `sendPlanSettings` |
+| 6 | `plan/status` | 1-5s | 0 | `sendPlanStatus` |
+| 7 | `grv/status` | 1-5s | 0 | `sendGrvStatus` |
+| 8 | `ree/status` | 5-30s | 0 | `sendReeStatus` |
+| 9 | `tube/status` | 1s | 0 | `sendTubeStatus` |
+| 10 | `tube/impedance` | 0.5-2s | 0 | `sendTubeImpedance` |
+| 11 | `reflux/status` | Per packet | 0 | `sendRefluxStatus` |
+| 12 | `events/clinical` | On event | 1 | `sendClinicalEvent` |
+| 13 | `events/mechanical` | On event | 1 | `sendMechanicalEvent` |
+| 14 | `report/jobs` | On upload | 1 | `sendReportMetadata` |
+
+---
+
+## CloudEventPublisher
+
+The `CloudEventPublisher` class in `shared-api` provides typed methods for each ICD topic. Use this instead of constructing `CloudEventParcel` directly:
+
+```kotlin
+val publisher = CloudEventPublisher(dccService)
+publisher.sendSystemMetadata(json)    // system/metadata   QoS 0
+publisher.sendPumpStatus(json)        // pump/status        QoS 0
+publisher.sendClinicalEvent(json)     // events/clinical    QoS 1
+publisher.sendReportMetadata(json)    // report/jobs        QoS 1
+// ... 14 typed methods total
+```
 
 ---
 
@@ -143,53 +172,50 @@ pump-fleet/{device_serial}/
 
 The MQTT payload is `CloudEventParcel.dataJson` — only the inner JSON, not the full envelope. The envelope fields (`id`, `source`, `time`, `priority`) are reconstructed cloud-side by the IoT Rule.
 
-> Full payload schemas (field-level reference with types, enums, and examples) are maintained in the cloud repository at `Cloud/docs/data-model.md`. The schemas below are summaries for quick reference.
+> Full payload schemas (field-level reference with types, enums, and examples) are maintained in the cloud repository at `Cloud/docs/dcc-integration-guide.md`.
 
-### 1. Device Status
-
-```json
-{
-  "state": "FEEDING",
-  "sub_state": "DELIVERING",
-  "uptime_sec": 14523,
-  "battery": { "percent": 78, "is_mains": true, "voltage_mv": 12450, "charging": true },
-  "pump": { "vol_delivered_ml": 245.5, "flow_rate_ml_hr": 125.0, "target_vol_ml": 500.0, "is_prime": false, "motor_rpm": 12 },
-  "sensors": { "ft_connected": true, "ft_type": "NGT-12FR", "pressure_mmhg": 15.2, "temperature_c": 36.8, "impedance": { "z1": 1245.3, "z2": 1102.7, "z3": 1389.1, "s1": 82.4, "s2": 78.9 }, "ree_kcal_day": 1680 }
-}
-```
-
-**States:** `IDLE`, `FEEDING`, `PAUSED`, `PRIMING`, `ALARM`, `FLUSHING`, `MAINTENANCE`, `OFF`
-
-### 2. Safety Alarm
+### 1. System Metadata
 
 ```json
 {
-  "event_code": "ALM_OCCLUSION",
-  "lifecycle": "RAISED",
-  "severity": "CRITICAL",
-  "message": "Occlusion detected on feeding line",
-  "correlation_id": "corr-8f3a-4b2c",
-  "technical_context": { "pressure_mmhg": 85.3, "threshold_mmhg": 60.0, "motor_stall": true, "line_position": "PROXIMAL" }
-}
-```
-
-**Codes:** `ALM_OCCLUSION`, `ALM_AIR_IN_LINE`, `ALM_BAG_EMPTY`, `ALM_BAG_FULL`, `ALM_LINE_DISPLACED`, `ALM_PUMP_MALFUNCTION`, `ALM_BATTERY_CRITICAL`, `ALM_SENSOR_FAULT`
-**Lifecycle:** `RAISED`, `ACKNOWLEDGED`, `RESOLVED`, `ESCALATED`
-**Severity:** `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`
-
-### 3. Therapy / Nutrition
-
-```json
-{
-  "event": "SESSION_START",
-  "plan_id": "plan-abc123",
-  "settings": { "vtbd_ml": 500, "basal_rate_ml_hr": 125, "product_name": "Jevity 1.5 Cal", "product_kcal_ml": 1.5, "ramp_up_min": 15, "max_rate_ml_hr": 150 },
-  "patient_weight_kg": 72.0,
+  "system_state": "SYSTEM_COLLECTING_DATA",
+  "battery_pct": 78,
+  "cpu_temp_c": 52,
+  "mains_connected": true,
+  "os_uptime_sec": 14523,
+  "gui_alive_counter": 8842,
+  "network_speed_kbps": 1200,
   "timestamp": 1708819200000
 }
 ```
 
-**Events:** `SESSION_START`, `SESSION_STOP`, `SESSION_PAUSE`, `SESSION_RESUME`, `PLAN_COMPLETE`, `PLAN_MODIFIED`, `BOLUS_START`, `BOLUS_COMPLETE`, `FLUSH_START`, `FLUSH_COMPLETE`
+### 2. Pump Status
+
+```json
+{
+  "dose_program_state": "NUTRIENTS_DOSE_RELEASE",
+  "motor_state": "RUNNING",
+  "instant_rate_ml_hr": 125.0,
+  "nutrients_source_state": "DETECTED",
+  "fluids_source_state": "DETECTED",
+  "nutrients_prime_state": "PRIMED",
+  "fluids_prime_state": "PRIMED",
+  "nutrients_fluids_ratio": 80,
+  "timestamp": 1708819200000
+}
+```
+
+### 3. Clinical Event
+
+```json
+{
+  "event_type": "OCCLUSION",
+  "severity": "CRITICAL",
+  "message": "Occlusion detected on feeding line",
+  "correlation_id": "corr-8f3a-4b2c",
+  "timestamp": 1708819200000
+}
+```
 
 ### 4. Report Upload Metadata
 
@@ -206,27 +232,28 @@ Published automatically by the DCC after a successful S3 upload:
 }
 ```
 
-**Report types:** `DAILY_SUMMARY`, `INCIDENT`, `DISCHARGE`
-
 ---
 
 ## Binding to the DCC
 
 ```kotlin
-private var dccService: ICloudConnectService? = null
+private var cloudService: ICloudConnectService? = null
+private var publisher: CloudEventPublisher? = null
 
 private val connection = object : ServiceConnection {
     override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-        dccService = ICloudConnectService.Stub.asInterface(binder)
+        cloudService = ICloudConnectService.Stub.asInterface(binder)
+        publisher = CloudEventPublisher(cloudService!!)
     }
     override fun onServiceDisconnected(name: ComponentName) {
-        dccService = null
+        cloudService = null
+        publisher = null
     }
 }
 
 // Bind
-val intent = Intent("com.artmedical.dcc.CLOUD_CONNECT")
-intent.setPackage("com.artmedical.dcc")
+val intent = Intent("com.artmedical.dcc.START_SERVICE")
+intent.component = ComponentName("com.artmedical.dcc", "com.artmedical.dcc.service.ConnectivityService")
 bindService(intent, connection, Context.BIND_AUTO_CREATE)
 ```
 
@@ -241,5 +268,5 @@ The client app must declare the permission in its manifest:
 
 For full payload field reference, Athena table schema, S3 storage layout, and GraphQL types, see the cloud repository:
 
-- `Cloud/docs/data-model.md` — complete data model with all payload schemas, Athena DDL, and S3 partitioning
-- `Cloud/docs/dcc-integration-guide.md` — integration guide for medical.apk developers with Kotlin helpers and examples
+- `Cloud/docs/dcc-integration-guide.md` — complete ICD-aligned integration guide with all payload schemas, state enums, and Kotlin helpers
+- `Cloud/docs/data-model.md` — Athena DDL, S3 partitioning, and GraphQL types

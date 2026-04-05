@@ -87,7 +87,7 @@ A test UI demonstrating how to bind to the DCC and exercise all features: device
 2. **Binder** reads the file via PFD into a local copy under `filesDir/pending_reports/`, inserts a `ReportEntity` into Room, then calls `processReportQueue()`.
 3. **processReportQueue()** picks the next pending report, calls `ReportUploadManager.uploadToS3()`:
    - S3 key: `reports/{deviceSerial}/{date}/{reportId}.pdf`
-   - On success: publishes an MQTT metadata event (topic `sys/device/{serial}/report`) and deletes the local file + DB record
+   - On success: publishes an MQTT metadata event (topic `report/jobs`) and deletes the local file + DB record
    - On failure: increments retry count; gives up after 3 attempts
 4. Report queue processing is independent from event queue processing (separate `AtomicBoolean`).
 
@@ -99,19 +99,15 @@ The DCC publishes to AWS IoT Core using the **Basic Ingest** prefix to bypass th
 $aws/rules/smart_ingest/pump-fleet/{device_serial}/{event.type}
 ```
 
-Where `event.type` is one of the `sys/` prefixed topics defined in the cloud data model. The cloud IoT Rule matches `FROM 'pump-fleet/+/sys/#'`.
-
-See [interface.md](interface.md) for the full topic taxonomy.
+Where `event.type` is one of the ICD-aligned topics (e.g. `system/metadata`, `pump/status`, `events/clinical`). See [interface.md](interface.md) for the full topic taxonomy.
 
 ## Device Identity
 
-On first launch, the service generates a UUID and stores it in `SharedPreferences` (`dcc_device_prefs`). This becomes the device serial used in all MQTT topics:
+The device serial is resolved by the DCC in priority order:
+1. **Manufacturing-assigned** — system property `ro.art.serial` (production devices)
+2. **Persisted UUID** — generated once, stored in `SharedPreferences` (`dcc_device_prefs`) (development fallback)
 
-```
-pump-fleet/{uuid}
-```
-
-The serial persists across app restarts. Clearing app data generates a new identity.
+The serial is used in all MQTT topics as `pump-fleet/{serial}`. Production devices will have `ro.art.serial` flashed during manufacturing.
 
 ## Authentication
 

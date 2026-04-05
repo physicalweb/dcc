@@ -48,6 +48,12 @@ android {
         buildConfig = true
     }
 
+    sourceSets {
+        getByName("androidTest") {
+            assets.srcDirs("$projectDir/schemas")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -70,5 +76,23 @@ dependencies {
     // Room dependencies
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler) // Add Room compiler for KSP
+    ksp(libs.androidx.room.compiler)
+
+    // Unit tests (JVM)
+    testImplementation(libs.junit)
+    testImplementation(libs.google.truth)
+    testImplementation(libs.kotlinx.coroutines.test)
+
+    // Instrumented tests (device/emulator)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.google.truth)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.androidx.arch.core.testing)
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }

@@ -117,11 +117,11 @@ You must install both applications on the same device or emulator.
 
 ## MQTT Topics
 
-*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/sys/...` (Basic Ingest prefix bypasses broker, routes directly to IoT Rule)
+*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/{topic}` (Basic Ingest prefix bypasses broker, routes directly to IoT Rule)
 *   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#`
-*   **Event types:** `sys/device/{deviceId}/status`, `sys/clinical/{patientId}/therapy/nutrition`, `sys/clinical/{patientId}/safety/alarm`, `sys/device/{deviceSerial}/report`
+*   **Topics (ICD-aligned):** `system/metadata`, `pump/status`, `pump/dose`, `plan/settings`, `plan/status`, `tube/status`, `tube/impedance`, `grv/status`, `ree/status`, `events/clinical`, `events/mechanical`, `report/jobs`, etc.
 
-The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`).
+The `device-serial` is resolved from manufacturing system property `ro.art.serial` (production) or a persisted UUID (development fallback).
 
 ## Limitations & Future Work
 
