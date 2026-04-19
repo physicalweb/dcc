@@ -447,26 +447,14 @@ class ConnectivityService : Service() {
      * Until X.509 client certificates are provisioned, this is the device identity.
      */
     private fun resolveDeviceSerial(): String {
-        // 1. Manufacturing-assigned system property
-        try {
-            val mfgSerial = System.getProperty("ro.art.serial")
-            if (!mfgSerial.isNullOrBlank()) {
-                Log.i(tag, "Using manufacturing serial: $mfgSerial")
-                return mfgSerial
-            }
-        } catch (e: Exception) {
-            Log.w(tag, "Could not read system property ro.art.serial", e)
-        }
-
-        // 2. Persisted UUID fallback (development)
         val prefs = getSharedPreferences("dcc_device_prefs", Context.MODE_PRIVATE)
         var serial = prefs.getString("device_serial", null)
         if (serial == null) {
             serial = UUID.randomUUID().toString()
             prefs.edit().putString("device_serial", serial).apply()
-            Log.w(tag, "No manufacturing serial found — generated dev serial: $serial")
+            Log.i(tag, "Generated new device serial: $serial")
         } else {
-            Log.i(tag, "Using persisted dev serial: $serial")
+            Log.i(tag, "Using persisted device serial: $serial")
         }
         return serial
     }

@@ -121,7 +121,7 @@ You must install both applications on the same device or emulator.
 *   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#`
 *   **Topics (ICD-aligned):** `system/metadata`, `pump/status`, `pump/dose`, `plan/settings`, `plan/status`, `tube/status`, `tube/impedance`, `grv/status`, `ree/status`, `events/clinical`, `events/mechanical`, `report/jobs`, etc.
 
-The `device-serial` is resolved from manufacturing system property `ro.art.serial` (production) or a persisted UUID (development fallback).
+The `device-serial` is a UUID generated on first launch and persisted in `SharedPreferences`.
 
 ## Limitations & Future Work
 

@@ -103,11 +103,7 @@ Where `event.type` is one of the ICD-aligned topics (e.g. `system/metadata`, `pu
 
 ## Device Identity
 
-The device serial is resolved by the DCC in priority order:
-1. **Manufacturing-assigned** — system property `ro.art.serial` (production devices)
-2. **Persisted UUID** — generated once, stored in `SharedPreferences` (`dcc_device_prefs`) (development fallback)
-
-The serial is used in all MQTT topics as `pump-fleet/{serial}`. Production devices will have `ro.art.serial` flashed during manufacturing.
+A UUID is generated on first launch and persisted in `SharedPreferences` (`dcc_device_prefs`). This becomes the device serial used in all MQTT topics as `pump-fleet/{serial}`. The serial is stable across app restarts; clearing app data generates a new identity.
 
 ## Authentication
 
