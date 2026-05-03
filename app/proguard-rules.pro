@@ -7,6 +7,13 @@
 -keep interface com.amazonaws.** { *; }
 -dontwarn com.amazonaws.**
 
+# Conscrypt / OkHttp transitive references that don't exist at runtime
+-dontwarn org.conscrypt.**
+-dontwarn com.android.org.conscrypt.**
+-dontwarn org.apache.harmony.xnet.provider.jsse.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+
 # AIDL contract — public API surface for clients
 -keep class com.artmedical.cloud.api.** { *; }
 -keep interface com.artmedical.cloud.api.** { *; }
