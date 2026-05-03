@@ -7,8 +7,8 @@
 
     <permission
         android:name="com.artmedical.permission.BIND_DCC"
-        android:protectionLevel="normal" /> 
-        <!-- WARNING: For development only. Change back to "signature" for release. -->
+        android:protectionLevel="signature" />
+        <!-- Only apps signed with the same release certificate can bind. -->
 
     <application
         android:allowBackup="true"

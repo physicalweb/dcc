@@ -34,9 +34,22 @@ android {
         buildConfigField("String", "S3_REPORTS_BUCKET", "\"$s3ReportsBucket\"")
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = localProperties.getProperty("RELEASE_KEYSTORE")
+            if (keystorePath != null) {
+                storeFile = file(keystorePath)
+                storePassword = localProperties.getProperty("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
+                keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
