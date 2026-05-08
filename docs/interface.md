@@ -47,7 +47,7 @@ The universal event envelope. Every uplink event uses this structure.
 data class CloudEventParcel(
     val id: String,              // UUID — unique per event
     val source: String,          // Subsystem name (e.g. "pump-controller")
-    val type: String,            // MQTT sub-topic (e.g. "sys/device/dev001/status")
+    val type: String,            // MQTT sub-topic (e.g. "system/metadata", "pump/status")
     val time: Long,              // System.currentTimeMillis() — epoch ms
     val priority: Int,           // 0, 1, or 2 (see Priority section)
     val dataContentType: String, // Always "application/json"

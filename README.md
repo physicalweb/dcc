@@ -41,6 +41,7 @@ The project is structured as a multi-module Android application to ensure a clea
 *   **Network Recovery:** Auto-flushes queue on network restoration and MQTT reconnect via `ConnectivityManager.NetworkCallback`.
 *   **PDF Report Upload:** Client apps send reports via `ParcelFileDescriptor`; the service uploads to S3 and publishes MQTT metadata.
 *   **Publish Timeout:** MQTT publishes time out after 15 seconds to prevent hung callbacks from blocking the queue.
+*   **mTLS Auth:** MQTT connects via X.509 mutual TLS with the device cert + private key stored in hardware-backed Android Keystore (S3 reports still on Cognito IDP — pending cloud migration to presigned URLs).
 
 ## Security Model
 
