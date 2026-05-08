@@ -107,13 +107,13 @@ A UUID is generated on first launch and persisted in `SharedPreferences` (`dcc_d
 
 ## Authentication
 
-The DCC uses **Cognito Identity Pool** (unauthenticated flow) to obtain temporary AWS credentials. These credentials authorize:
-- `iot:Connect`, `iot:Publish`, `iot:Subscribe`, `iot:Receive` — for MQTT
-- `s3:PutObject` — for PDF report uploads
+The DCC uses two auth paths:
 
-The `CognitoCachingCredentialsProvider` caches credentials in SharedPreferences and auto-refreshes them before expiry.
+**MQTT (X.509 mutual TLS):** The device cert + private key are stored in the hardware-backed Android Keystore (alias `mtls-device-cert`). On first run, `DeviceCertProvisioner` reads a `.p12` bundle from app-specific external storage (`/sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12`), imports it into the Keystore, and deletes the source file. The MQTT clientId is the bare device serial (matches the IoT Thing name). The cloud's IoT policy enforces `iot:Connection.Thing.ThingName` — wrong clientId = connection refused.
 
-> **Critical:** The Cognito Identity Pool must be in the **same AWS account** as the IoT Core endpoint and cloud infrastructure. A mismatch results in events being published to the wrong account.
+**S3 (Cognito Identity Pool):** PDF report uploads still use the Cognito unauthenticated flow for `s3:PutObject`. This is a transitional state — the cloud roadmap will replace this with presigned PUT URLs.
+
+> **Critical:** Both auth paths must point at the **same AWS account** as the cloud infrastructure. A mismatch results in events being published to the wrong account.
 
 ## Resilience
 
@@ -130,5 +130,6 @@ The `CognitoCachingCredentialsProvider` caches credentials in SharedPreferences 
 - **AIDL permission**: `com.artmedical.permission.BIND_DCC` gates access to the service.
   - Development: `protectionLevel="normal"` (any app can bind)
   - Production: must change to `protectionLevel="signature"` (only apps signed with the same certificate)
-- **AWS credentials**: never stored in the APK. Obtained at runtime via Cognito and cached in SharedPreferences.
+- **MQTT credentials**: X.509 cert + RSA private key in hardware-backed Android Keystore. Imported once from a `.p12` sideloaded to app-specific external storage; the source file is deleted post-import. Key cannot be extracted from the Keystore after import.
+- **S3 credentials**: temporary credentials obtained at runtime via Cognito Identity Pool, cached in SharedPreferences.
 - **No secrets in source**: endpoint, pool ID, and bucket name come from `local.properties` (gitignored) via `BuildConfig`.

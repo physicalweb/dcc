@@ -53,7 +53,10 @@ class ConnectivityService : Service() {
     private val AWS_REGION = Regions.US_EAST_1
 
     // Stable device identity — UUID generated once, persisted in SharedPreferences
-    private lateinit var DEVICE_SERIAL: String
+    // Identity (used as MQTT clientId and IoT Thing name) — bare serial, no prefix
+    private lateinit var THING_NAME: String
+    // Topic prefix for publish/subscribe — "pump-fleet/<serial>"
+    private lateinit var TOPIC_PREFIX: String
     private lateinit var DOWNLINK_TOPIC: String
 
     // Basic Ingest prefix — bypasses broker, routes directly to IoT Rule ($0.08/M vs $1.00/M)
@@ -158,9 +161,10 @@ class ConnectivityService : Service() {
         // 2. Build config override (lab/staging)
         // 3. Persisted UUID fallback (development only)
         rawDeviceSerial = resolveDeviceSerial()
-        DEVICE_SERIAL = "pump-fleet/$rawDeviceSerial"
-        DOWNLINK_TOPIC = "$DEVICE_SERIAL/cmd/#"
-        Log.i(tag, "Device serial: $DEVICE_SERIAL")
+        THING_NAME = rawDeviceSerial
+        TOPIC_PREFIX = "pump-fleet/$rawDeviceSerial"
+        DOWNLINK_TOPIC = "$TOPIC_PREFIX/cmd/#"
+        Log.i(tag, "Thing name: $THING_NAME, topic prefix: $TOPIC_PREFIX")
 
         database =
                 Room.databaseBuilder(applicationContext, AppDatabase::class.java, "dcc-database")
@@ -197,6 +201,8 @@ class ConnectivityService : Service() {
     }
 
     private suspend fun connectToAwsIot() {
+        // Cognito provider is kept ONLY for the S3 report upload path (ReportUploadManager).
+        // MQTT auth uses X.509 mTLS via AndroidKeyStore (see DeviceCertProvisioner).
         credentialsProvider =
                 CognitoCachingCredentialsProvider(applicationContext, COGNITO_POOL_ID, AWS_REGION)
 
@@ -204,14 +210,22 @@ class ConnectivityService : Service() {
             applicationContext, credentialsProvider, database.reportDao()
         )
 
-        Log.i(tag, "Connecting to endpoint: $CUSTOMER_SPECIFIC_ENDPOINT")
-        Log.i(tag, "Connecting with Client ID: $DEVICE_SERIAL")
+        // mTLS provisioning: import .p12 to AndroidKeyStore on first run
+        val provisioner = DeviceCertProvisioner(applicationContext)
+        if (!provisioner.provisionIfNeeded(THING_NAME)) {
+            Log.e(tag, "Cannot connect: device not provisioned. " +
+                    "Push <serial>.p12 to ${getExternalFilesDir(null)?.absolutePath}/provisioning/")
+            return
+        }
 
-        mqttManager = AWSIotMqttManager(DEVICE_SERIAL, CUSTOMER_SPECIFIC_ENDPOINT)
+        Log.i(tag, "Connecting to endpoint: $CUSTOMER_SPECIFIC_ENDPOINT")
+        Log.i(tag, "Connecting with Client ID: $THING_NAME")
+
+        mqttManager = AWSIotMqttManager(THING_NAME, CUSTOMER_SPECIFIC_ENDPOINT)
 
         try {
             mqttManager.connect(
-                    credentialsProvider,
+                    provisioner.loadDeviceKeyStore(),
                     AWSIotMqttClientStatusCallback { status, throwable ->
                         when (status) {
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
@@ -315,7 +329,7 @@ class ConnectivityService : Service() {
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun uploadEventSafely(event: EventEntity): Boolean {
         // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
-        val topic = "$BASIC_INGEST_PREFIX/$DEVICE_SERIAL/${event.type}"
+        val topic = "$BASIC_INGEST_PREFIX/$TOPIC_PREFIX/${event.type}"
 
         val qos = if (mapPriorityToQos(event.priority) == 0)
                 AWSIotMqttQos.QOS0 else AWSIotMqttQos.QOS1
@@ -392,7 +406,7 @@ class ConnectivityService : Service() {
                     // Publish MQTT metadata via existing event pipeline
                     val metadataEvent = EventEntity(
                         id = UUID.randomUUID().toString(),
-                        source = DEVICE_SERIAL,
+                        source = TOPIC_PREFIX,
                         type = "report/jobs",
                         time = System.currentTimeMillis(),
                         priority = 1,

@@ -122,6 +122,25 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r client/build/outputs/apk/debug/client-debug.apk
 ```
 
+### Provision the mTLS device cert
+
+The DCC requires an X.509 cert + private key to connect to AWS IoT Core. Get the `.p12` bundle for your device serial from the cloud team's `provision-device.py` script, then sideload it:
+
+```bash
+# First, ensure the provisioning dir exists (DCC creates it on first launch, but this is faster):
+adb shell run-as com.artmedical.dcc mkdir -p files/provisioning  # may not work pre-Android 10
+# Or: just push to the external app-specific dir (no permissions required):
+adb push <serial>.p12 /sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12
+```
+
+On first service start, the DCC will:
+1. Detect the `.p12`
+2. Import it into hardware-backed AndroidKeyStore (alias `mtls-device-cert`)
+3. Delete the source `.p12`
+4. Persist a `mtls.provisioned` flag in SharedPreferences
+
+Subsequent launches skip provisioning and connect directly.
+
 ### Launch the client
 
 ```bash
