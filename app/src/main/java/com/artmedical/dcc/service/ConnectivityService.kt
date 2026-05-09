@@ -15,13 +15,11 @@ import android.os.RemoteCallbackList
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.room.Room
-import com.amazonaws.auth.CognitoCachingCredentialsProvider
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttClientStatusCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttManager
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttMessageDeliveryCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttNewMessageCallback
 import com.amazonaws.mobileconnectors.iot.AWSIotMqttQos
-import com.amazonaws.regions.Regions
 import com.artmedical.cloud.api.CloudEventParcel
 import com.artmedical.cloud.api.ICloudConnectService
 import com.artmedical.cloud.api.ICloudEventListener
@@ -47,10 +45,7 @@ class ConnectivityService : Service() {
     private val NOTIFICATION_ID = 1
 
     // --- AWS IoT Core Configuration ---
-    // Make sure these are set in your local.properties!
     private val CUSTOMER_SPECIFIC_ENDPOINT = BuildConfig.AWS_IOT_ENDPOINT
-    private val COGNITO_POOL_ID = BuildConfig.COGNITO_POOL_ID
-    private val AWS_REGION = Regions.US_EAST_1
 
     // Stable device identity — UUID generated once, persisted in SharedPreferences
     // Identity (used as MQTT clientId and IoT Thing name) — bare serial, no prefix
@@ -66,7 +61,6 @@ class ConnectivityService : Service() {
     private val BASIC_INGEST_PREFIX = "\$aws/rules/smart_ingest_icd"
 
     private lateinit var mqttManager: AWSIotMqttManager
-    private lateinit var credentialsProvider: CognitoCachingCredentialsProvider
     private lateinit var connectivityManager: ConnectivityManager
 
     private val medicalListeners = RemoteCallbackList<ICloudEventListener>()
@@ -204,15 +198,6 @@ class ConnectivityService : Service() {
     }
 
     private suspend fun connectToAwsIot() {
-        // Cognito provider is kept ONLY for the S3 report upload path (ReportUploadManager).
-        // MQTT auth uses X.509 mTLS via AndroidKeyStore (see DeviceCertProvisioner).
-        credentialsProvider =
-                CognitoCachingCredentialsProvider(applicationContext, COGNITO_POOL_ID, AWS_REGION)
-
-        reportUploadManager = ReportUploadManager(
-            applicationContext, credentialsProvider, database.reportDao()
-        )
-
         // mTLS provisioning: import .p12 to AndroidKeyStore on first run
         val provisioner = DeviceCertProvisioner(applicationContext)
         if (!provisioner.provisionIfNeeded(THING_NAME)) {
@@ -225,6 +210,11 @@ class ConnectivityService : Service() {
         Log.i(tag, "Connecting with Client ID: $THING_NAME")
 
         mqttManager = AWSIotMqttManager(THING_NAME, CUSTOMER_SPECIFIC_ENDPOINT)
+
+        // ReportUploadManager rides on the same MQTT connection (presigned URL flow).
+        reportUploadManager = ReportUploadManager(
+            mqttManager, database.reportDao(), THING_NAME
+        )
 
         try {
             mqttManager.connect(

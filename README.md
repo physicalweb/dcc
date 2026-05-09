@@ -41,7 +41,7 @@ The project is structured as a multi-module Android application to ensure a clea
 *   **Network Recovery:** Auto-flushes queue on network restoration and MQTT reconnect via `ConnectivityManager.NetworkCallback`.
 *   **PDF Report Upload:** Client apps send reports via `ParcelFileDescriptor`; the service uploads to S3 and publishes MQTT metadata.
 *   **Publish Timeout:** MQTT publishes time out after 15 seconds to prevent hung callbacks from blocking the queue.
-*   **mTLS Auth:** MQTT connects via X.509 mutual TLS with the device cert + private key stored in hardware-backed Android Keystore (S3 reports still on Cognito IDP — pending cloud migration to presigned URLs).
+*   **mTLS Auth:** MQTT connects via X.509 mutual TLS with the device cert + private key stored in hardware-backed Android Keystore. PDF reports upload via cloud-issued presigned PUT URLs over the same MQTT connection — the device holds no AWS credentials.
 
 ## Security Model
 
@@ -86,15 +86,13 @@ Any client app wishing to connect must still request this permission in its own 
 
 ### 1. Configuration
 
-Create `local.properties` in the project root with your cloud credentials:
+The IoT endpoint has a sensible dev default in `app/build.gradle.kts`. To override (e.g. point at a different account), add to `local.properties`:
 
 ```properties
 AWS_IOT_ENDPOINT=<your-iot-endpoint>
-COGNITO_POOL_ID=<your-cognito-identity-pool-id>
-S3_REPORTS_BUCKET=<your-s3-reports-bucket>
 ```
 
-> **Important:** These must point to the same AWS account where the cloud infrastructure (IoT Rules, Firehose, dashboard) is deployed. Using credentials from a different account will result in events not reaching the data pipeline.
+> **Important:** Each device also needs an X.509 cert + private key (sideloaded as a `.p12`). See [docs/deployment.md](docs/deployment.md) for provisioning steps.
 
 ### 2. Build the Project
 

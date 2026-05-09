@@ -1,40 +1,44 @@
 package com.artmedical.dcc.service
 
-import android.content.Context
 import android.util.Log
-import com.amazonaws.auth.CognitoCachingCredentialsProvider
-import com.amazonaws.mobileconnectors.s3.transferutility.TransferListener
-import com.amazonaws.mobileconnectors.s3.transferutility.TransferNetworkLossHandler
-import com.amazonaws.mobileconnectors.s3.transferutility.TransferState
-import com.amazonaws.mobileconnectors.s3.transferutility.TransferUtility
-import com.amazonaws.regions.Region
-import com.amazonaws.regions.Regions
-import com.amazonaws.services.s3.AmazonS3Client
-import com.artmedical.dcc.BuildConfig
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttManager
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttNewMessageCallback
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttQos
 import com.artmedical.dcc.service.data.ReportDao
 import com.artmedical.dcc.service.data.ReportEntity
-import java.io.File
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
+/**
+ * Uploads PDF reports to S3 via a presigned URL flow.
+ *
+ * Flow:
+ *   1. Subscribe to pump-fleet/<thing>/reports/upload-url/response
+ *   2. Publish reportId to pump-fleet/<thing>/reports/upload-url/request
+ *   3. Cloud Lambda responds with a 1-hour presigned PUT URL
+ *   4. HTTP PUT the PDF bytes to that URL (no auth headers — embedded in URL)
+ *
+ * The MQTT connection (mTLS) carries the request/response. The device never
+ * holds AWS credentials directly.
+ */
 class ReportUploadManager(
-    context: Context,
-    credentialsProvider: CognitoCachingCredentialsProvider,
-    private val reportDao: ReportDao
+    private val mqttManager: AWSIotMqttManager,
+    private val reportDao: ReportDao,
+    private val thingName: String,
 ) {
     private val tag = "DCC-ReportUpload"
-    private val bucketName = BuildConfig.S3_REPORTS_BUCKET
-    private val transferUtility: TransferUtility
-
-    init {
-        TransferNetworkLossHandler.getInstance(context)
-
-        val s3Client = AmazonS3Client(credentialsProvider, Region.getRegion(Regions.US_EAST_1))
-        transferUtility = TransferUtility.builder()
-            .context(context)
-            .s3Client(s3Client)
-            .build()
-    }
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .build()
 
     suspend fun uploadToS3(report: ReportEntity): Boolean {
         val file = File(report.localFilePath)
@@ -44,59 +48,75 @@ class ReportUploadManager(
             return false
         }
 
+        val url = withTimeoutOrNull(URL_REQUEST_TIMEOUT_MS) {
+            requestPresignedUrl(report.reportId)
+        }
+        if (url == null) {
+            Log.e(tag, "Presigned URL request timed out for ${report.reportId}")
+            reportDao.updateStatus(report.reportId, "FAILED", "URL request timed out")
+            return false
+        }
+
         reportDao.setStatus(report.reportId, "UPLOADING")
-
-        return suspendCancellableCoroutine { continuation ->
-            try {
-                val observer = transferUtility.upload(
-                    bucketName,
-                    report.s3Key,
-                    file
-                )
-
-                observer.setTransferListener(object : TransferListener {
-                    override fun onStateChanged(id: Int, state: TransferState) {
-                        when (state) {
-                            TransferState.COMPLETED -> {
-                                Log.i(tag, "S3 upload completed: ${report.s3Key}")
-                                if (continuation.isActive) continuation.resume(true)
-                            }
-                            TransferState.FAILED -> {
-                                Log.e(tag, "S3 upload failed: ${report.s3Key}")
-                                if (continuation.isActive) continuation.resume(false)
-                            }
-                            TransferState.CANCELED -> {
-                                Log.w(tag, "S3 upload canceled: ${report.s3Key}")
-                                if (continuation.isActive) continuation.resume(false)
-                            }
-                            else -> Log.d(tag, "S3 upload state: $state for ${report.s3Key}")
-                        }
-                    }
-
-                    override fun onProgressChanged(id: Int, bytesCurrent: Long, bytesTotal: Long) {
-                        Log.v(tag, "Upload progress: $bytesCurrent / $bytesTotal")
-                    }
-
-                    override fun onError(id: Int, ex: Exception) {
-                        Log.e(tag, "S3 upload error", ex)
-                        if (continuation.isActive) continuation.resume(false)
-                    }
-                })
-
-                continuation.invokeOnCancellation {
-                    observer.cleanTransferListener()
-                    transferUtility.cancel(observer.id)
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .put(file.asRequestBody("application/pdf".toMediaType()))
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.i(tag, "Upload complete: ${report.s3Key}")
+                    true
+                } else {
+                    Log.e(tag, "Upload failed HTTP ${response.code}: ${report.s3Key}")
+                    reportDao.updateStatus(report.reportId, "FAILED", "HTTP ${response.code}")
+                    false
                 }
-            } catch (e: Exception) {
-                Log.e(tag, "Exception starting S3 upload", e)
-                if (continuation.isActive) continuation.resume(false)
             }
+        } catch (e: Exception) {
+            Log.e(tag, "Upload exception for ${report.s3Key}", e)
+            reportDao.updateStatus(report.reportId, "FAILED", e.message)
+            false
         }
     }
 
-    companion object {
-        fun computeS3Key(deviceSerial: String, reportDate: String, reportId: String): String {
-            return "reports/$deviceSerial/$reportDate/$reportId.pdf"
+    private suspend fun requestPresignedUrl(reportId: String): String =
+        suspendCancellableCoroutine { continuation ->
+            val responseTopic = "pump-fleet/$thingName/reports/upload-url/response"
+            val requestTopic = "pump-fleet/$thingName/reports/upload-url/request"
+
+            try {
+                // Subscribe FIRST, then publish — avoid the race where the response
+                // arrives before our subscription is established.
+                mqttManager.subscribeToTopic(
+                    responseTopic,
+                    AWSIotMqttQos.QOS0,
+                    AWSIotMqttNewMessageCallback { _, data ->
+                        try {
+                            val json = JSONObject(String(data))
+                            val url = json.getString("url")
+                            if (continuation.isActive) {
+                                continuation.resume(url)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to parse upload-url response", e)
+                            if (continuation.isActive) continuation.cancel(e)
+                        } finally {
+                            try { mqttManager.unsubscribeTopic(responseTopic) } catch (_: Exception) {}
+                        }
+                    }
+                )
+                val payload = JSONObject().put("reportId", reportId).toString()
+                mqttManager.publishString(payload, requestTopic, AWSIotMqttQos.QOS0)
+            } catch (e: Exception) {
+                if (continuation.isActive) continuation.cancel(e)
+            }
         }
+
+    companion object {
+        private const val URL_REQUEST_TIMEOUT_MS = 10_000L
+
+        fun computeS3Key(deviceSerial: String, reportDate: String, reportId: String): String =
+            "reports/$deviceSerial/$reportDate/$reportId.pdf"
     }
 }

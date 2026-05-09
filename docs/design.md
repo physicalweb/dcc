@@ -86,7 +86,10 @@ A test UI demonstrating how to bind to the DCC and exercise all features: device
 1. **Client** opens a PDF file, creates a `ParcelFileDescriptor` and `ReportMetadata`, calls `uploadReport()`.
 2. **Binder** reads the file via PFD into a local copy under `filesDir/pending_reports/`, inserts a `ReportEntity` into Room, then calls `processReportQueue()`.
 3. **processReportQueue()** picks the next pending report, calls `ReportUploadManager.uploadToS3()`:
-   - S3 key: `reports/{deviceSerial}/{date}/{reportId}.pdf`
+   - Subscribes to `pump-fleet/{thing}/reports/upload-url/response`
+   - Publishes the `reportId` to `pump-fleet/{thing}/reports/upload-url/request`
+   - Cloud Lambda returns a presigned PUT URL (10s timeout)
+   - HTTP PUT the PDF bytes to that URL via OkHttp; presigned URL embeds the auth
    - On success: publishes an MQTT metadata event (topic `report/jobs`) and deletes the local file + DB record
    - On failure: increments retry count; gives up after 3 attempts
 4. Report queue processing is independent from event queue processing (separate `AtomicBoolean`).
@@ -107,13 +110,11 @@ A UUID is generated on first launch and persisted in `SharedPreferences` (`dcc_d
 
 ## Authentication
 
-The DCC uses two auth paths:
+The DCC authenticates exclusively via X.509 mutual TLS. It holds no AWS credentials.
 
-**MQTT (X.509 mutual TLS):** The device cert + private key are stored in the hardware-backed Android Keystore (alias `mtls-device-cert`). On first run, `DeviceCertProvisioner` reads a `.p12` bundle from app-specific external storage (`/sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12`), imports it into the Keystore, and deletes the source file. The MQTT clientId is the bare device serial (matches the IoT Thing name). The cloud's IoT policy enforces `iot:Connection.Thing.ThingName` — wrong clientId = connection refused.
+The device cert + private key are stored in the hardware-backed Android Keystore (alias `mtls-device-cert`). On first run, `DeviceCertProvisioner` reads a `.p12` bundle from app-specific external storage (`/sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12`), imports it into the Keystore, and deletes the source file. The MQTT clientId is the bare device serial (matches the IoT Thing name). The cloud's IoT policy enforces `iot:Connection.Thing.ThingName` — wrong clientId = connection refused.
 
-**S3 (Cognito Identity Pool):** PDF report uploads still use the Cognito unauthenticated flow for `s3:PutObject`. This is a transitional state — the cloud roadmap will replace this with presigned PUT URLs.
-
-> **Critical:** Both auth paths must point at the **same AWS account** as the cloud infrastructure. A mismatch results in events being published to the wrong account.
+PDF report uploads ride on the same MQTT connection: the DCC publishes a request and receives a 1-hour presigned S3 PUT URL from a cloud Lambda, then PUTs the bytes via plain HTTP. The presigned URL embeds the auth, so the device never needs S3 credentials.
 
 ## Resilience
 
@@ -131,5 +132,5 @@ The DCC uses two auth paths:
   - Development: `protectionLevel="normal"` (any app can bind)
   - Production: must change to `protectionLevel="signature"` (only apps signed with the same certificate)
 - **MQTT credentials**: X.509 cert + RSA private key in hardware-backed Android Keystore. Imported once from a `.p12` sideloaded to app-specific external storage; the source file is deleted post-import. Key cannot be extracted from the Keystore after import.
-- **S3 credentials**: temporary credentials obtained at runtime via Cognito Identity Pool, cached in SharedPreferences.
+- **S3 credentials**: none on the device. PDF uploads use presigned PUT URLs minted by a cloud Lambda; the URL is single-use with a 1-hour expiry.
 - **No secrets in source**: endpoint, pool ID, and bucket name come from `local.properties` (gitignored) via `BuildConfig`.
