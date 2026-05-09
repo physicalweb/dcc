@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyProperties
 import android.security.keystore.KeyProtection
 import android.util.Log
+import com.artmedical.dcc.BuildConfig
 import java.io.File
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -24,7 +25,7 @@ class DeviceCertProvisioner(private val context: Context) {
         private const val PREFS = "dcc_mtls_prefs"
         private const val FLAG_PROVISIONED = "mtls.provisioned"
         private const val PROVISIONING_DIR = "provisioning"
-        private const val P12_PASSWORD = ""
+        private const val P12_PASSWORD = "mtls"
         private const val tag = "DCC-Provisioner"
     }
 
@@ -92,15 +93,28 @@ class DeviceCertProvisioner(private val context: Context) {
         val privateKey = pkcs12.getKey(alias, P12_PASSWORD.toCharArray()) as PrivateKey
         val chain = pkcs12.getCertificateChain(alias).map { it as X509Certificate }.toTypedArray()
 
-        // Import into AndroidKeyStore with sign + decrypt purposes (needed for TLS)
+        // Import into AndroidKeyStore with broad TLS-handshake-friendly purposes:
+        // - PURPOSE_SIGN + RSA-PSS is required for TLS 1.3 CertificateVerify.
+        // - PURPOSE_SIGN + RSA-PKCS1 covers TLS 1.2.
+        // - PURPOSE_DECRYPT + RSA-PKCS1 covers older RSA key-exchange suites.
+        // Without RSA-PSS the handshake fails with conscrypt's
+        // "RSA routines:OPENSSL_internal:internal error".
         val androidKs = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         androidKs.setEntry(
             KEYSTORE_ALIAS,
             KeyStore.PrivateKeyEntry(privateKey, chain),
             KeyProtection.Builder(KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_DECRYPT)
-                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA1)
+                .setDigests(
+                    KeyProperties.DIGEST_SHA256,
+                    KeyProperties.DIGEST_SHA384,
+                    KeyProperties.DIGEST_SHA512,
+                    KeyProperties.DIGEST_SHA1,
+                )
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1)
-                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .setSignaturePaddings(
+                    KeyProperties.SIGNATURE_PADDING_RSA_PKCS1,
+                    KeyProperties.SIGNATURE_PADDING_RSA_PSS,
+                )
                 .build()
         )
     }
@@ -108,8 +122,27 @@ class DeviceCertProvisioner(private val context: Context) {
     /**
      * Returns a KeyStore handle suitable for AWSIotMqttManager.connect(KeyStore, ...).
      * Throws if the device isn't provisioned.
+     *
+     * Debug builds only: if a `<serial>.p12` is present in the provisioning
+     * dir at call time, that PKCS12 is loaded as a transient in-memory
+     * KeyStore instead of going through AndroidKeyStore. This is a
+     * workaround for the Android emulator's software keymaster, which fails
+     * to perform RSA-PSS signing required by TLS 1.3 (`RSA routines:
+     * OPENSSL_internal:internal error` inside conscrypt). On real devices
+     * with hardware keymasters, AndroidKeyStore is used as intended; the
+     * debug fallback is dead code in release builds (compiled out by
+     * ProGuard/R8 along with the BuildConfig.DEBUG branch).
      */
-    fun loadDeviceKeyStore(): KeyStore {
+    fun loadDeviceKeyStore(serial: String): KeyStore {
+        if (BuildConfig.DEBUG) {
+            val p12 = File(provisioningDir(), "$serial.p12")
+            if (p12.exists()) {
+                Log.w(tag, "Debug build: loading PKCS12 from ${p12.absolutePath}")
+                val ks = KeyStore.getInstance("PKCS12")
+                p12.inputStream().use { ks.load(it, P12_PASSWORD.toCharArray()) }
+                return ks
+            }
+        }
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         check(ks.containsAlias(KEYSTORE_ALIAS)) {
             "Device not provisioned: alias '$KEYSTORE_ALIAS' not found in AndroidKeyStore"

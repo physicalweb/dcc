@@ -60,7 +60,10 @@ class ConnectivityService : Service() {
     private lateinit var DOWNLINK_TOPIC: String
 
     // Basic Ingest prefix — bypasses broker, routes directly to IoT Rule ($0.08/M vs $1.00/M)
-    private val BASIC_INGEST_PREFIX = "\$aws/rules/smart_ingest"
+    // Must match the cloud-side IoT rule name. The rule is `smart_ingest_icd`
+    // (see infra/lib/ingestion-stack.ts in the cloud repo). Basic Ingest
+    // silently drops messages addressed to a rule that doesn't exist.
+    private val BASIC_INGEST_PREFIX = "\$aws/rules/smart_ingest_icd"
 
     private lateinit var mqttManager: AWSIotMqttManager
     private lateinit var credentialsProvider: CognitoCachingCredentialsProvider
@@ -225,7 +228,7 @@ class ConnectivityService : Service() {
 
         try {
             mqttManager.connect(
-                    provisioner.loadDeviceKeyStore(),
+                    provisioner.loadDeviceKeyStore(THING_NAME),
                     AWSIotMqttClientStatusCallback { status, throwable ->
                         when (status) {
                             AWSIotMqttClientStatusCallback.AWSIotMqttClientStatus.Connected -> {
