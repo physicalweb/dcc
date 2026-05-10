@@ -94,7 +94,16 @@ class DeviceCertProvisioner(@Suppress("unused") private val context: Context) {
         kpg.initialize(
             KeyGenParameterSpec.Builder(KEYSTORE_ALIAS, KeyProperties.PURPOSE_SIGN)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setDigests(
+                    KeyProperties.DIGEST_SHA256,
+                    // DIGEST_NONE is required for the TLS handshake. Conscrypt's
+                    // EcdsaMethodDoSign pre-hashes the handshake transcript and asks
+                    // the keystore to do raw ECDSA via Signature.getInstance("NONEwithECDSA").
+                    // Without DIGEST_NONE, the keystore refuses the raw-signing call
+                    // ("Could not sign message in EcdsaMethodDoSign") and TLS fails
+                    // with a generic SSLHandshakeException I/O error.
+                    KeyProperties.DIGEST_NONE,
+                )
                 .build()
         )
         return kpg.generateKeyPair()
