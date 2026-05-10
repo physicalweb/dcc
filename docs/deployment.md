@@ -66,24 +66,20 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r client/build/outputs/apk/debug/client-debug.apk
 ```
 
-### Provision the mTLS device cert
+### mTLS enrollment (automatic)
 
-The DCC requires an X.509 cert + private key to connect to AWS IoT Core. Get the `.p12` bundle for your device serial from the cloud team's `provision-device.py` script, then sideload it:
+The DCC self-enrolls on first run — no manual provisioning step. On the first service start with an unprovisioned device:
 
-```bash
-# First, ensure the provisioning dir exists (DCC creates it on first launch, but this is faster):
-adb shell run-as com.artmedical.dcc mkdir -p files/provisioning  # may not work pre-Android 10
-# Or: just push to the external app-specific dir (no permissions required):
-adb push <serial>.p12 /sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12
-```
+1. Generates an ECDSA P-256 keypair in the hardware-backed Android Keystore (alias `mtls-device-cert-ec`).
+2. Builds a CSR and POSTs it to `BuildConfig.ENROLLMENT_URL` (the cloud enrollment Lambda).
+3. Receives an AWS-signed leaf cert in the response.
+4. Stores the cert alongside the private key in Android Keystore.
 
-On first service start, the DCC will:
-1. Detect the `.p12`
-2. Import it into hardware-backed AndroidKeyStore (alias `mtls-device-cert`)
-3. Delete the source `.p12`
-4. Persist a `mtls.provisioned` flag in SharedPreferences
+In dev (`ENROLLMENT_DEV_MODE=true` on the cloud), no bootstrap token is required. In prod, set `ENROLLMENT_TOKEN` in `local.properties` so the build picks it up.
 
-Subsequent launches skip provisioning and connect directly.
+**Prerequisite:** The device serial must already be registered as an IoT Thing in the cloud allowlist before enrollment, otherwise the endpoint returns 404. The DCC's serial is generated locally as a UUID on first launch (visible in the very first `DCC-Service: Device serial:` logcat line); coordinate with cloud to register it, or change the resolution to a manufacturing-assigned ID before fielding.
+
+Subsequent launches skip enrollment and connect directly.
 
 ### Launch the client
 
@@ -93,15 +89,15 @@ adb shell am start -n com.artmedical.dccclient/.MainActivity
 
 Then tap **"Bind to DCC Service"** in the client UI. The DCC service starts as a foreground service.
 
-### Re-provision (if switching devices/accounts)
+### Re-enroll (if switching devices/accounts)
 
-To force re-provisioning (new cert) on the next launch, clear app data:
+To force re-enrollment (new keypair + cert) on the next launch, clear app data:
 
 ```bash
 adb shell pm clear com.artmedical.dcc
 ```
 
-This also wipes the AndroidKeyStore alias `mtls-device-cert` and the device serial UUID. Push a fresh `.p12` to the provisioning dir before re-launching.
+This wipes the Android Keystore alias `mtls-device-cert-ec` and the device serial UUID. The next launch generates a fresh keypair and re-enrolls automatically — no manual cert sideload.
 
 ---
 
@@ -156,7 +152,9 @@ The device appears in the cloud dashboard's device picker once:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Cannot connect: device not provisioned` | No `.p12` in provisioning dir | `adb push <serial>.p12 /sdcard/Android/data/com.artmedical.dcc/files/provisioning/` and restart the service. |
+| `Cannot connect: device not provisioned` | Enrollment failed — no cert in Keystore | Check `DCC-Provisioner` logcat for the failure. Verify serial is registered in cloud allowlist (HTTP 404 from enrollment endpoint = not registered). Clear app data and retry. |
+| `enroll HTTP 401` | Bootstrap token missing/wrong | Set `ENROLLMENT_TOKEN` in `local.properties` (dev usually doesn't need one). |
+| `enroll HTTP 404` | Serial not registered as an IoT Thing | Coordinate with cloud team to add the device serial to the allowlist. |
 | `Connecting...` but never `Connected` | Wrong endpoint, expired/revoked cert, or clientId mismatch | Verify `AWS_IOT_ENDPOINT` matches the target account. Check IoT Core CloudWatch logs for the connection rejection reason. |
 | `Reconnect failed` repeatedly | Emulator/device has no internet | Check `adb logcat` for DNS failures. Cold boot the emulator or check proxy settings. |
 | `Received Upstream` but no `Uploaded` | processQueue stuck (timeout or isProcessing deadlock) | Look for `processQueue: skipped (already processing)` or `Publish timed out`. Restart the DCC service. |
