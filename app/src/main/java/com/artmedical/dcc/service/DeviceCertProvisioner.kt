@@ -1,152 +1,183 @@
 package com.artmedical.dcc.service
 
 import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.KeyProtection
 import android.util.Log
 import com.artmedical.dcc.BuildConfig
-import java.io.File
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder
+import org.json.JSONObject
+import java.io.StringWriter
+import java.security.KeyPair
+import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import java.security.spec.ECGenParameterSpec
+import java.util.concurrent.TimeUnit
 
 /**
- * One-time provisioning: read a .p12 (cert + private key) from external app storage,
- * import the PrivateKeyEntry into AndroidKeyStore, then delete the source file.
+ * On first run, generate an ECDSA P-256 keypair in AndroidKeyStore (private
+ * key never leaves), build a CSR, POST it to the enrollment endpoint, and
+ * store the returned signed cert alongside the keypair.
  *
- * Provisioning workflow on a new device:
- *   adb push <serial>.p12 /sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12
- *   (App will pick it up on next service start, import, and delete)
+ * After successful enrollment, the AndroidKeyStore alias [KEYSTORE_ALIAS]
+ * holds: the EC private key (hardware-backed) + the AWS-signed leaf cert.
+ * That's everything mTLS needs.
+ *
+ * No `.p12` files. No SharedPreferences flag — AndroidKeyStore is the source
+ * of truth, and `isProvisioned()` distinguishes the dummy self-signed cert
+ * (created at keypair generation) from a real AWS-signed cert.
  */
-class DeviceCertProvisioner(private val context: Context) {
-
-    companion object {
-        const val KEYSTORE_ALIAS = "mtls-device-cert"
-        private const val PREFS = "dcc_mtls_prefs"
-        private const val FLAG_PROVISIONED = "mtls.provisioned"
-        private const val PROVISIONING_DIR = "provisioning"
-        private const val P12_PASSWORD = "mtls"
-        private const val tag = "DCC-Provisioner"
-    }
+class DeviceCertProvisioner(@Suppress("unused") private val context: Context) {
 
     fun isProvisioned(): Boolean {
-        if (!context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean(FLAG_PROVISIONED, false)) {
-            return false
-        }
-        // Verify the entry actually exists in the keystore
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return ks.containsAlias(KEYSTORE_ALIAS)
+        if (!ks.containsAlias(KEYSTORE_ALIAS)) return false
+        val cert = ks.getCertificate(KEYSTORE_ALIAS) as? X509Certificate ?: return false
+        // AndroidKeyStore generates a self-signed dummy cert when the keypair is
+        // created. A real AWS-signed cert has issuer != subject. Use that to
+        // tell whether enrollment has actually completed.
+        return cert.subjectX500Principal != cert.issuerX500Principal
     }
 
     /**
-     * Looks for a .p12 file in the provisioning directory and imports it.
-     * Returns true if provisioning succeeded (or was already done), false if no .p12 was found.
+     * Idempotent. Returns true if the device is provisioned at exit (already
+     * was, or just enrolled). Returns false on any failure during enrollment.
      */
     fun provisionIfNeeded(serial: String): Boolean {
         if (isProvisioned()) {
             Log.d(tag, "Already provisioned, skipping")
             return true
         }
-
-        val p12File = findP12File(serial)
-        if (p12File == null) {
-            Log.w(tag, "No .p12 found in ${provisioningDir().absolutePath}")
-            return false
-        }
-
         return try {
-            importP12(p12File)
-            p12File.delete()
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean(FLAG_PROVISIONED, true).apply()
-            Log.i(tag, "Provisioned successfully (deleted ${p12File.name})")
+            Log.i(tag, "Generating EC keypair for $serial")
+            val keyPair = generateKeyPair()
+            Log.i(tag, "POSTing CSR to ${BuildConfig.ENROLLMENT_URL}")
+            val csrPem = buildCsr(keyPair, serial)
+            val certPem = enroll(serial, csrPem)
+            storeCert(keyPair.private, certPem)
+            deleteLegacyRsaEntry()
+            Log.i(tag, "Enrolled $serial — cert in AndroidKeyStore")
             true
         } catch (e: Exception) {
-            Log.e(tag, "Provisioning failed", e)
+            Log.e(tag, "Enrollment failed", e)
+            // Best-effort cleanup: a half-provisioned key without a real cert
+            // would block future enrollment because isProvisioned() trips on
+            // the dummy cert if subject==issuer. We delete the alias so the
+            // next attempt starts fresh.
+            deleteKeyEntry()
             false
         }
     }
 
-    private fun provisioningDir(): File {
-        val dir = File(context.getExternalFilesDir(null), PROVISIONING_DIR)
-        if (!dir.exists()) dir.mkdirs()
-        return dir
+    fun loadDeviceKeyStore(@Suppress("UNUSED_PARAMETER") serial: String): KeyStore {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        check(ks.containsAlias(KEYSTORE_ALIAS)) {
+            "Device not provisioned: alias '$KEYSTORE_ALIAS' not found"
+        }
+        return ks
     }
 
-    private fun findP12File(serial: String): File? {
-        val expected = File(provisioningDir(), "$serial.p12")
-        if (expected.exists()) return expected
-        // Fallback: any .p12 in the dir
-        return provisioningDir().listFiles { f -> f.name.endsWith(".p12") }?.firstOrNull()
-    }
+    // --- internals ----------------------------------------------------
 
-    private fun importP12(p12File: File) {
-        // Load the PKCS12 bundle
-        val pkcs12 = KeyStore.getInstance("PKCS12")
-        p12File.inputStream().use { pkcs12.load(it, P12_PASSWORD.toCharArray()) }
-
-        // Find the private key entry (there should be exactly one)
-        val alias = pkcs12.aliases().toList().firstOrNull { pkcs12.isKeyEntry(it) }
-            ?: error("No key entry found in PKCS12")
-
-        val privateKey = pkcs12.getKey(alias, P12_PASSWORD.toCharArray()) as PrivateKey
-        val chain = pkcs12.getCertificateChain(alias).map { it as X509Certificate }.toTypedArray()
-
-        // Import into AndroidKeyStore with broad TLS-handshake-friendly purposes:
-        // - PURPOSE_SIGN + RSA-PSS is required for TLS 1.3 CertificateVerify.
-        // - PURPOSE_SIGN + RSA-PKCS1 covers TLS 1.2.
-        // - PURPOSE_DECRYPT + RSA-PKCS1 covers older RSA key-exchange suites.
-        // Without RSA-PSS the handshake fails with conscrypt's
-        // "RSA routines:OPENSSL_internal:internal error".
-        val androidKs = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        androidKs.setEntry(
-            KEYSTORE_ALIAS,
-            KeyStore.PrivateKeyEntry(privateKey, chain),
-            KeyProtection.Builder(KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_DECRYPT)
-                .setDigests(
-                    KeyProperties.DIGEST_SHA256,
-                    KeyProperties.DIGEST_SHA384,
-                    KeyProperties.DIGEST_SHA512,
-                    KeyProperties.DIGEST_SHA1,
-                )
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1)
-                .setSignaturePaddings(
-                    KeyProperties.SIGNATURE_PADDING_RSA_PKCS1,
-                    KeyProperties.SIGNATURE_PADDING_RSA_PSS,
-                )
+    private fun generateKeyPair(): KeyPair {
+        val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+        kpg.initialize(
+            KeyGenParameterSpec.Builder(KEYSTORE_ALIAS, KeyProperties.PURPOSE_SIGN)
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
                 .build()
         )
+        return kpg.generateKeyPair()
+    }
+
+    private fun buildCsr(keyPair: KeyPair, serial: String): String {
+        val subject = X500Name("CN=$serial")
+        val csrBuilder = JcaPKCS10CertificationRequestBuilder(subject, keyPair.public)
+        // setProvider("AndroidKeyStore") routes the signing op to the
+        // AndroidKeyStore-resident private key. Without it, BouncyCastle would
+        // try to extract key bytes (which fails — non-extractable).
+        val signer = JcaContentSignerBuilder("SHA256withECDSA")
+            .setProvider("AndroidKeyStore")
+            .build(keyPair.private)
+        val csr = csrBuilder.build(signer)
+        val sw = StringWriter()
+        JcaPEMWriter(sw).use { it.writeObject(csr) }
+        return sw.toString()
+    }
+
+    private fun enroll(serial: String, csrPem: String): String {
+        val token = BuildConfig.ENROLLMENT_TOKEN
+        val body = JSONObject().apply {
+            put("serial", serial)
+            put("csrPem", csrPem)
+            if (token.isNotEmpty()) put("token", token)
+        }
+        val req = Request.Builder()
+            .url(BuildConfig.ENROLLMENT_URL)
+            .post(body.toString().toRequestBody(JSON))
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            val responseBody = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                throw RuntimeException("enroll HTTP ${resp.code}: $responseBody")
+            }
+            return JSONObject(responseBody).getString("certPem")
+        }
+    }
+
+    private fun storeCert(privateKey: PrivateKey, certPem: String) {
+        val cert = CertificateFactory.getInstance("X.509")
+            .generateCertificate(certPem.byteInputStream()) as X509Certificate
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        // Replaces the AndroidKeyStore-generated self-signed dummy cert with
+        // the real one. The private key stays in AndroidKeyStore — we pass
+        // the AndroidKeyStore-resident PrivateKey reference, not its bytes.
+        ks.setKeyEntry(KEYSTORE_ALIAS, privateKey, null, arrayOf(cert))
+    }
+
+    private fun deleteKeyEntry() {
+        try {
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (ks.containsAlias(KEYSTORE_ALIAS)) ks.deleteEntry(KEYSTORE_ALIAS)
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to clean up partial keystore entry", e)
+        }
     }
 
     /**
-     * Returns a KeyStore handle suitable for AWSIotMqttManager.connect(KeyStore, ...).
-     * Throws if the device isn't provisioned.
-     *
-     * Debug builds only: if a `<serial>.p12` is present in the provisioning
-     * dir at call time, that PKCS12 is loaded as a transient in-memory
-     * KeyStore instead of going through AndroidKeyStore. This is a
-     * workaround for the Android emulator's software keymaster, which fails
-     * to perform RSA-PSS signing required by TLS 1.3 (`RSA routines:
-     * OPENSSL_internal:internal error` inside conscrypt). On real devices
-     * with hardware keymasters, AndroidKeyStore is used as intended; the
-     * debug fallback is dead code in release builds (compiled out by
-     * ProGuard/R8 along with the BuildConfig.DEBUG branch).
+     * Removes the legacy RSA entry from earlier mTLS provisioning, if present.
+     * Idempotent and best-effort: failure here doesn't block enrollment.
      */
-    fun loadDeviceKeyStore(serial: String): KeyStore {
-        if (BuildConfig.DEBUG) {
-            val p12 = File(provisioningDir(), "$serial.p12")
-            if (p12.exists()) {
-                Log.w(tag, "Debug build: loading PKCS12 from ${p12.absolutePath}")
-                val ks = KeyStore.getInstance("PKCS12")
-                p12.inputStream().use { ks.load(it, P12_PASSWORD.toCharArray()) }
-                return ks
+    private fun deleteLegacyRsaEntry() {
+        try {
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (ks.containsAlias(LEGACY_RSA_ALIAS)) {
+                ks.deleteEntry(LEGACY_RSA_ALIAS)
+                Log.i(tag, "Removed legacy RSA entry '$LEGACY_RSA_ALIAS'")
             }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to remove legacy RSA entry", e)
         }
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        check(ks.containsAlias(KEYSTORE_ALIAS)) {
-            "Device not provisioned: alias '$KEYSTORE_ALIAS' not found in AndroidKeyStore"
-        }
-        return ks
+    }
+
+    companion object {
+        const val KEYSTORE_ALIAS = "mtls-device-cert-ec"
+        private const val LEGACY_RSA_ALIAS = "mtls-device-cert"
+        private const val tag = "DCC-Provisioner"
+        private val JSON = "application/json".toMediaType()
+        private val httpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
     }
 }

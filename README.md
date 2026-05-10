@@ -41,7 +41,7 @@ The project is structured as a multi-module Android application to ensure a clea
 *   **Network Recovery:** Auto-flushes queue on network restoration and MQTT reconnect via `ConnectivityManager.NetworkCallback`.
 *   **PDF Report Upload:** Client apps send reports via `ParcelFileDescriptor`; the service uploads to S3 and publishes MQTT metadata.
 *   **Publish Timeout:** MQTT publishes time out after 15 seconds to prevent hung callbacks from blocking the queue.
-*   **mTLS Auth:** MQTT connects via X.509 mutual TLS with the device cert + private key stored in hardware-backed Android Keystore. PDF reports upload via cloud-issued presigned PUT URLs over the same MQTT connection — the device holds no AWS credentials.
+*   **mTLS Auth:** MQTT connects via X.509 mutual TLS. ECDSA P-256 keypair generated on first run in hardware-backed Android Keystore (private key non-extractable), cert obtained via CSR-based self-enrollment to a cloud HTTPS endpoint. PDF reports upload via cloud-issued presigned PUT URLs over the same MQTT connection — the device holds no AWS credentials.
 
 ## Security Model
 
@@ -92,7 +92,7 @@ The IoT endpoint has a sensible dev default in `app/build.gradle.kts`. To overri
 AWS_IOT_ENDPOINT=<your-iot-endpoint>
 ```
 
-> **Important:** Each device also needs an X.509 cert + private key (sideloaded as a `.p12`). See [docs/deployment.md](docs/deployment.md) for provisioning steps.
+> **Note:** The DCC self-enrolls on first run — generates an ECDSA keypair in Android Keystore, sends a CSR to the cloud enrollment endpoint, stores the returned cert. No manual cert sideload. See [docs/deployment.md](docs/deployment.md) for details.
 
 ### 2. Build the Project
 

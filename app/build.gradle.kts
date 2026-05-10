@@ -27,7 +27,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val awsIotEndpoint = localProperties.getProperty("AWS_IOT_ENDPOINT") ?: "aee93mkgcstsg-ats.iot.us-east-1.amazonaws.com"
+        val enrollmentUrl = localProperties.getProperty("ENROLLMENT_URL") ?: "https://7ttecn2go8.execute-api.us-east-1.amazonaws.com/prod/enroll"
+        val enrollmentToken = localProperties.getProperty("ENROLLMENT_TOKEN") ?: ""
         buildConfigField("String", "AWS_IOT_ENDPOINT", "\"$awsIotEndpoint\"")
+        buildConfigField("String", "ENROLLMENT_URL", "\"$enrollmentUrl\"")
+        buildConfigField("String", "ENROLLMENT_TOKEN", "\"$enrollmentToken\"")
     }
 
     buildTypes {
@@ -68,6 +72,7 @@ dependencies {
     implementation("com.amazonaws:aws-android-sdk-iot:2.81.1")
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 
     // Room dependencies
     implementation(libs.androidx.room.runtime)

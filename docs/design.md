@@ -112,7 +112,15 @@ A UUID is generated on first launch and persisted in `SharedPreferences` (`dcc_d
 
 The DCC authenticates exclusively via X.509 mutual TLS. It holds no AWS credentials.
 
-The device cert + private key are stored in the hardware-backed Android Keystore (alias `mtls-device-cert`). On first run, `DeviceCertProvisioner` reads a `.p12` bundle from app-specific external storage (`/sdcard/Android/data/com.artmedical.dcc/files/provisioning/<serial>.p12`), imports it into the Keystore, and deletes the source file. The MQTT clientId is the bare device serial (matches the IoT Thing name). The cloud's IoT policy enforces `iot:Connection.Thing.ThingName` — wrong clientId = connection refused.
+On first run, `DeviceCertProvisioner` self-enrolls:
+1. Generates an ECDSA P-256 keypair in the hardware-backed Android Keystore (alias `mtls-device-cert-ec`). The private key is non-extractable.
+2. Builds a PKCS#10 CSR (CN = device serial), signed in-place by the Keystore-resident key.
+3. POSTs the CSR to the cloud enrollment endpoint (`BuildConfig.ENROLLMENT_URL`, optional bootstrap token via `BuildConfig.ENROLLMENT_TOKEN`).
+4. Stores the AWS-signed leaf cert returned by the endpoint via `KeyStore.setKeyEntry(alias, privateKey, null, [cert])` — the key reference stays inside Android Keystore.
+
+`isProvisioned()` checks Android Keystore directly: alias exists AND `cert.subject != cert.issuer` (the dummy self-signed cert that Android Keystore creates at keypair generation has subject == issuer). No SharedPreferences flag — Keystore is the source of truth.
+
+The MQTT clientId is the bare device serial (matches the IoT Thing name). The cloud's IoT policy enforces `iot:Connection.Thing.ThingName` — wrong clientId = connection refused. ECDSA keys avoid the conscrypt RSA-PSS bug seen on software keymasters (TLS 1.3 ECDSA uses `ecdsa_secp256r1_sha256`, not PSS).
 
 PDF report uploads ride on the same MQTT connection: the DCC publishes a request and receives a 1-hour presigned S3 PUT URL from a cloud Lambda, then PUTs the bytes via plain HTTP. The presigned URL embeds the auth, so the device never needs S3 credentials.
 
@@ -131,6 +139,6 @@ PDF report uploads ride on the same MQTT connection: the DCC publishes a request
 - **AIDL permission**: `com.artmedical.permission.BIND_DCC` gates access to the service.
   - Development: `protectionLevel="normal"` (any app can bind)
   - Production: must change to `protectionLevel="signature"` (only apps signed with the same certificate)
-- **MQTT credentials**: X.509 cert + RSA private key in hardware-backed Android Keystore. Imported once from a `.p12` sideloaded to app-specific external storage; the source file is deleted post-import. Key cannot be extracted from the Keystore after import.
+- **MQTT credentials**: ECDSA P-256 keypair generated on-device in hardware-backed Android Keystore (non-extractable). Cert obtained via CSR-based enrollment to a cloud HTTPS endpoint on first run. No private-key material ever touches disk or network.
 - **S3 credentials**: none on the device. PDF uploads use presigned PUT URLs minted by a cloud Lambda; the URL is single-use with a 1-hour expiry.
 - **No secrets in source**: endpoint, pool ID, and bucket name come from `local.properties` (gitignored) via `BuildConfig`.
