@@ -103,12 +103,15 @@ class DeviceCertProvisioner(@Suppress("unused") private val context: Context) {
     private fun buildCsr(keyPair: KeyPair, serial: String): String {
         val subject = X500Name("CN=$serial")
         val csrBuilder = JcaPKCS10CertificationRequestBuilder(subject, keyPair.public)
-        // setProvider("AndroidKeyStore") routes the signing op to the
-        // AndroidKeyStore-resident private key. Without it, BouncyCastle would
-        // try to extract key bytes (which fails — non-extractable).
-        val signer = JcaContentSignerBuilder("SHA256withECDSA")
-            .setProvider("AndroidKeyStore")
-            .build(keyPair.private)
+        // No setProvider("AndroidKeyStore") — AndroidKeyStore doesn't expose
+        // SHA256withECDSA as a Signature service, so that path throws
+        // NoSuchAlgorithmException. The default provider chain finds
+        // Conscrypt's Signature impl, which routes signing of
+        // AndroidKeyStore-resident PrivateKey objects back into the keystore
+        // — the key never leaves (non-extractable; signing is delegated to
+        // keymaster). If Conscrypt isn't picked up automatically on a given
+        // platform, "AndroidKeyStoreBCWorkaround" is the bridge fallback.
+        val signer = JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.private)
         val csr = csrBuilder.build(signer)
         val sw = StringWriter()
         JcaPEMWriter(sw).use { it.writeObject(csr) }
