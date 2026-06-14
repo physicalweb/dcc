@@ -91,7 +91,7 @@ A test UI demonstrating how to bind to the DCC and exercise all features: device
    - Cloud Lambda returns a presigned PUT URL (10s timeout)
    - HTTP PUT the PDF bytes to that URL via OkHttp; presigned URL embeds the auth
    - On success: publishes an MQTT metadata event (topic `report/jobs`) and deletes the local file + DB record
-   - On failure: increments retry count; gives up after 3 attempts
+   - On failure: marks the report `FAILED` with an error reason and stops the current pass. The DAO's `getNextPendingReport` selects both `PENDING` and `FAILED` rows, so the next queue trigger (network restore, MQTT reconnect, new upload) re-attempts. After 3 cumulative attempts the row is marked `FAILED` permanently with reason "Max retries exceeded" and skipped on subsequent passes.
 4. Report queue processing is independent from event queue processing (separate `AtomicBoolean`).
 
 ## MQTT Topic Structure
@@ -99,7 +99,7 @@ A test UI demonstrating how to bind to the DCC and exercise all features: device
 The DCC publishes to AWS IoT Core using the **Basic Ingest** prefix to bypass the message broker and route directly to IoT Rules (cost reduction):
 
 ```
-$aws/rules/smart_ingest/pump-fleet/{device_serial}/{event.type}
+$aws/rules/smart_ingest_icd/pump-fleet/{device_serial}/{event.type}
 ```
 
 Where `event.type` is one of the ICD-aligned topics (e.g. `system/metadata`, `pump/status`, `events/clinical`). See [interface.md](interface.md) for the full topic taxonomy.
@@ -132,7 +132,7 @@ PDF report uploads ride on the same MQTT connection: the DCC publishes a request
 | MQTT disconnected | SDK auto-reconnects (up to 10 attempts, exponential backoff). `Connected` callback triggers flush. |
 | Publish hangs | 15-second timeout per publish prevents blocking the queue. |
 | Process killed | Room persists events. On restart, `Connected` callback flushes the queue. |
-| S3 upload fails | Retries up to 3 times. Failed reports stay in Room for manual inspection. |
+| S3 upload fails | Retried on each queue trigger up to 3 cumulative attempts; permanently failed reports stay in Room for manual inspection. |
 
 ## Security
 

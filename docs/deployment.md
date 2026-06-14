@@ -121,7 +121,7 @@ After tapping "Send System Metadata" or "Burst" in the client:
 ```
 V DCC-Service: Received Upstream: system/metadata [Pri: 0]
 D DCC-Service: processQueue: started
-D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/system/metadata
+D DCC-Service: Uploaded: $aws/rules/smart_ingest_icd/pump-fleet/<serial>/system/metadata
 D DCC-Service: processQueue: finished
 ```
 
@@ -131,7 +131,7 @@ After tapping "Upload Sample PDF Report":
 ```
 I DCC-Service: Received report upload: <uuid>
 I DCC-ReportUpload: Upload complete: reports/<serial>/<date>/<uuid>.pdf
-D DCC-Service: Uploaded: $aws/rules/smart_ingest/pump-fleet/<serial>/report/jobs
+D DCC-Service: Uploaded: $aws/rules/smart_ingest_icd/pump-fleet/<serial>/report/jobs
 ```
 
 The `Upload complete` log means the OkHttp PUT to the presigned URL succeeded. Verify the file landed:
@@ -172,4 +172,4 @@ The device appears in the cloud dashboard's device picker once:
 - [ ] Tighten IoT policy on the cloud side: scope `iot:Connect` and `iot:Publish` to the specific Thing/topics
 - [ ] Configure ProGuard/R8 rules for AWS SDK classes
 - [ ] Set up monitoring: CloudWatch alarms on IoT Rule errors, Firehose delivery failures
-- [ ] Verify Room database migration path for schema changes beyond v2
+- [ ] Verify Room database migration path for future schema changes (current schema version: 2)

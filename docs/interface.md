@@ -93,7 +93,7 @@ Topics follow the ICD Aggregated Telemetry API (Rev 04). Each topic maps to one 
 
 The full MQTT topic on the wire is:
 ```
-$aws/rules/smart_ingest/pump-fleet/{device_serial}/{event.type}
+$aws/rules/smart_ingest_icd/pump-fleet/{device_serial}/{event.type}
 ```
 
 ### Topic Tree

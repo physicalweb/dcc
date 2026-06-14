@@ -321,7 +321,7 @@ class ConnectivityService : Service() {
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun uploadEventSafely(event: EventEntity): Boolean {
-        // Basic Ingest: $aws/rules/smart_ingest/pump-fleet/{serial}/{type}
+        // Basic Ingest: $aws/rules/smart_ingest_icd/pump-fleet/{serial}/{type}
         val topic = "$BASIC_INGEST_PREFIX/$TOPIC_PREFIX/${event.type}"
 
         val qos = if (mapPriorityToQos(event.priority) == 0)

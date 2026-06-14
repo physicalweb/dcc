@@ -116,7 +116,7 @@ You must install both applications on the same device or emulator.
 
 ## MQTT Topics
 
-*   **Uplink (publish):** `$aws/rules/smart_ingest/pump-fleet/{device-serial}/{topic}` (Basic Ingest prefix bypasses broker, routes directly to IoT Rule)
+*   **Uplink (publish):** `$aws/rules/smart_ingest_icd/pump-fleet/{device-serial}/{topic}` (Basic Ingest prefix bypasses broker, routes directly to IoT Rule)
 *   **Downlink (subscribe):** `pump-fleet/{device-serial}/cmd/#`
 *   **Topics (ICD-aligned):** `system/metadata`, `pump/status`, `pump/dose`, `plan/settings`, `plan/status`, `tube/status`, `tube/impedance`, `grv/status`, `ree/status`, `events/clinical`, `events/mechanical`, `report/jobs`, etc.
 
@@ -124,7 +124,7 @@ The `device-serial` is a UUID generated on first launch and persisted in `Shared
 
 ## Limitations & Future Work
 
-*   **Hardcoded Region:** AWS region is hardcoded to `us-east-1` in `ConnectivityService.kt`.
+*   **Hardcoded Region:** AWS region is baked into the default IoT endpoint and enrollment URL in `app/build.gradle.kts` (us-east-1). Override via `local.properties` for other regions.
 *   **No Exponential Backoff:** On publish failure, processing stops until the next network/reconnect trigger.
 *   **Dev-mode Security:** `BIND_DCC` permission is set to `normal`. Must change to `signature` for production (see Security Model above).
 
