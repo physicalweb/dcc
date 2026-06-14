@@ -1,0 +1,21 @@
+# Copy this file to `local.properties` and edit. `local.properties` is gitignored.
+
+# Required: path to your Android SDK.
+# macOS:   /Users/<you>/Library/Android/sdk
+# Linux:   /home/<you>/Android/Sdk
+# Windows: C:\\Users\\<you>\\AppData\\Local\\Android\\Sdk
+sdk.dir=/Users/<you>/Library/Android/sdk
+
+# --- Optional overrides ----------------------------------------------------
+# The defaults in app/build.gradle.kts already point at the team dev cloud,
+# so most devs leave these unset.
+
+# AWS IoT data endpoint (override only if pointing at a non-default account).
+# AWS_IOT_ENDPOINT=<your-account>.iot.us-east-1.amazonaws.com
+
+# Cloud enrollment Lambda URL (override only if pointing at a non-default account).
+# ENROLLMENT_URL=https://<your-api-id>.execute-api.us-east-1.amazonaws.com/prod/enroll
+
+# Bootstrap token required by the enrollment endpoint when the cloud is NOT
+# in ENROLLMENT_DEV_MODE. Leave empty in dev.
+# ENROLLMENT_TOKEN=

@@ -81,38 +81,79 @@ Any client app wishing to connect must still request this permission in its own 
 
 ### Prerequisites
 
-*   Android Studio (latest stable version)
-*   Cloud backend configured (see cloud documentation for setup).
+*   Android Studio (latest stable version) with SDK installed
+*   Access to the team's GitLab (`gitlab.artmedical.cloud`) — SSH key registered
+*   A device or emulator (Android 9+ / API 28+) with internet access
+*   A nudge to the cloud team to allowlist your device serial — see step 4 below
 
-### 1. Configuration
+### 1. Clone
 
-The IoT endpoint has a sensible dev default in `app/build.gradle.kts`. To override (e.g. point at a different account), add to `local.properties`:
-
-```properties
-AWS_IOT_ENDPOINT=<your-iot-endpoint>
+```bash
+git clone git@gitlab.artmedical.cloud:arnonz/dcc.git
+cd dcc
 ```
 
-> **Note:** The DCC self-enrolls on first run — generates an ECDSA keypair in Android Keystore, sends a CSR to the cloud enrollment endpoint, stores the returned cert. No manual cert sideload. See [docs/deployment.md](docs/deployment.md) for details.
+> Already cloned from GitHub? Repoint `origin` to GitLab:
+> ```bash
+> git remote set-url origin git@gitlab.artmedical.cloud:arnonz/dcc.git
+> git fetch origin --prune
+> ```
 
-### 2. Build the Project
+### 2. Configure `local.properties`
 
-You can build the entire project from the command line using the Gradle wrapper:
+The build needs at minimum `sdk.dir` (the path to your local Android SDK). Copy the template and edit:
+
+```bash
+cp local.properties.example local.properties
+# edit local.properties — set sdk.dir to your Android SDK path
+```
+
+The IoT endpoint, enrollment URL, and enrollment token have sensible dev defaults baked into `app/build.gradle.kts` that point at the team's dev cloud. Leave those overrides commented out unless you need to point at a different AWS account.
+
+`local.properties` is gitignored — do not commit it.
+
+### 3. Build
 
 ```bash
 ./gradlew clean assembleDebug
 ```
 
-This will compile all three modules and produce two APK files: `app-debug.apk` and `client-debug.apk`.
+This compiles all three modules and produces:
+- `app/build/outputs/apk/debug/app-debug.apk` — the DCC service
+- `client/build/outputs/apk/debug/client-debug.apk` — the test client
 
-### 3. Deploy and Run
+### 4. First-run cloud allowlist (one-time, REQUIRED)
 
-You must install both applications on the same device or emulator.
+The DCC self-enrolls on first launch by sending a CSR to the cloud enrollment endpoint. The cloud only accepts CSRs from device serials that are already registered as IoT Things. **Your first launch will fail with HTTP 404 from enrollment unless your serial is allowlisted.**
 
-1.  **Install the Service App:** Install the `:app` module from Android Studio. Since it has no UI, it will just install.
-2.  **Install and Run the Client App:** Install and run the `:client` module from Android Studio.
-3.  **Using the Client:**
-    *   Click the **"Bind to DCC Service"** button. The service will start (you will see a persistent notification), and the status text will change to "Connected".
-    *   Use the buttons to send device status, therapy events, safety alarms, burst events, or upload a sample PDF report.
+The serial is a UUID generated locally on first launch. To register it:
+
+1. Install both APKs (`adb install -r <path>`) and launch the client — let the first enrollment attempt fail.
+2. Grab the serial from logcat:
+   ```bash
+   adb logcat -s "DCC-Service" | grep "Device serial:"
+   ```
+   It will look like `Device serial: 550e8400-e29b-41d4-a716-446655440000`.
+3. Ping the cloud team with that UUID; they add it to the IoT Thing allowlist (or you do this yourself via the cloud repo's `provision-device.py`).
+4. Force-restart the DCC service (or reboot the device). Enrollment will succeed and you'll see `Connected to AWS IoT` in logcat.
+
+Subsequent launches skip enrollment. To re-enroll (new keypair + cert), clear app data: `adb shell pm clear com.artmedical.dcc`.
+
+### 5. Deploy and run
+
+Install both APKs on the same device/emulator (Android Studio "Run" works fine for each module, or `adb install -r`).
+
+1. **Service app (`:app`):** no UI; installing it is enough.
+2. **Client app (`:client`):** installs as `com.artmedical.dccclient`. Launch it.
+3. Tap **"Bind to DCC Service"**. The service starts (persistent notification appears) and the status text changes to "Connected".
+4. Use the client buttons to exercise device status, therapy events, safety alarms, burst events, and PDF report upload. Watch logcat:
+   ```bash
+   adb logcat -s "DCC-Service" "DCC-Provisioner" "DCC-ReportUpload"
+   ```
+
+### 6. Troubleshooting
+
+If anything doesn't work as expected, the symptom-cause-fix table in [docs/deployment.md](docs/deployment.md#troubleshooting) covers the common failures (404 on enrollment, MQTT never connects, presigned URL timeout, etc.).
 
 ## MQTT Topics
 
